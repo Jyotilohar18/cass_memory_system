@@ -1,3 +1,345 @@
 // src/reflect.ts
-// Reflector pipeline
-export {}; // Placeholder
+// Reflector Pipeline - ACE Pattern Multi-Iteration Reflection
+// Extracts reusable insights from session diaries into playbook deltas
+
+import { z } from "zod";
+import { generateObject } from "ai";
+import {
+  Config,
+  DiaryEntry,
+  Playbook,
+  PlaybookBullet,
+  PlaybookDelta,
+  PlaybookDeltaSchema,
+} from "./types.js";
+import { getModel, LLMConfig, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
+import { safeCassSearch } from "./cass.js";
+
+// ============================================================================
+// SCHEMAS FOR LLM OUTPUT
+// ============================================================================
+
+/**
+ * Schema for LLM reflector output - array of deltas
+ */
+const ReflectorOutputSchema = z.object({
+  deltas: z.array(PlaybookDeltaSchema),
+});
+
+type ReflectorOutput = z.infer<typeof ReflectorOutputSchema>;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Format playbook bullets for prompt context.
+ * Groups by category for readability.
+ */
+function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
+  if (bullets.length === 0) {
+    return "(No existing rules in playbook)";
+  }
+
+  // Group by category
+  const byCategory = new Map<string, PlaybookBullet[]>();
+  for (const bullet of bullets) {
+    const cat = bullet.category || "uncategorized";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(bullet);
+  }
+
+  const lines: string[] = [];
+  for (const [category, catBullets] of byCategory) {
+    lines.push(`\n## ${category}`);
+    for (const b of catBullets) {
+      const maturity =
+        b.maturity === "proven" ? "★" : b.maturity === "established" ? "●" : "○";
+      lines.push(
+        `[${b.id}] ${maturity} ${b.content} (${b.helpfulCount}+ / ${b.harmfulCount}-)`
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Format diary entry for prompt inclusion.
+ */
+function formatDiaryForPrompt(diary: DiaryEntry): string {
+  const sections: string[] = [];
+
+  sections.push(`## Session Overview`);
+  sections.push(`- Path: ${diary.sessionPath}`);
+  sections.push(`- Agent: ${diary.agent}`);
+  sections.push(`- Workspace: ${diary.workspace || "unknown"}`);
+  sections.push(`- Status: ${diary.status}`);
+  sections.push(`- Timestamp: ${diary.timestamp}`);
+
+  if (diary.accomplishments.length > 0) {
+    sections.push(`\n## Accomplishments`);
+    for (const a of diary.accomplishments) {
+      sections.push(`- ${a}`);
+    }
+  }
+
+  if (diary.decisions.length > 0) {
+    sections.push(`\n## Decisions Made`);
+    for (const d of diary.decisions) {
+      sections.push(`- ${d}`);
+    }
+  }
+
+  if (diary.challenges.length > 0) {
+    sections.push(`\n## Challenges Encountered`);
+    for (const c of diary.challenges) {
+      sections.push(`- ${c}`);
+    }
+  }
+
+  if (diary.keyLearnings.length > 0) {
+    sections.push(`\n## Key Learnings`);
+    for (const k of diary.keyLearnings) {
+      sections.push(`- ${k}`);
+    }
+  }
+
+  if (diary.preferences.length > 0) {
+    sections.push(`\n## User Preferences`);
+    for (const p of diary.preferences) {
+      sections.push(`- ${p}`);
+    }
+  }
+
+  return sections.join("\n");
+}
+
+/**
+ * Get relevant cass history for context enrichment.
+ */
+async function getCassHistoryForDiary(
+  diary: DiaryEntry,
+  config: Config
+): Promise<string> {
+  // Use related sessions if available
+  if (diary.relatedSessions && diary.relatedSessions.length > 0) {
+    return diary.relatedSessions
+      .slice(0, 5)
+      .map((s) => `[${s.agent}] ${s.snippet}`)
+      .join("\n\n");
+  }
+
+  // Otherwise search cass for relevant history
+  const searchTerms: string[] = [];
+
+  // Use key learnings as search seeds
+  for (const learning of (diary.keyLearnings || []).slice(0, 2)) {
+    const phrase = learning.split(/\s+/).slice(0, 5).join(" ");
+    searchTerms.push(phrase);
+  }
+
+  // Use challenges as search seeds
+  for (const challenge of (diary.challenges || []).slice(0, 2)) {
+    const phrase = challenge.split(/\s+/).slice(0, 5).join(" ");
+    searchTerms.push(phrase);
+  }
+
+  if (searchTerms.length === 0 && diary.workspace) {
+    searchTerms.push(diary.workspace);
+  }
+
+  const historySnippets: string[] = [];
+  for (const term of searchTerms.slice(0, 3)) {
+    try {
+      const hits = await safeCassSearch(term, {
+        limit: 3,
+        days: config.sessionLookbackDays,
+      });
+
+      for (const hit of hits) {
+        historySnippets.push(`[${hit.agent}] ${hit.snippet}`);
+      }
+    } catch {
+      // Ignore search failures - cass may not be available
+    }
+  }
+
+  if (historySnippets.length === 0) {
+    return "(No relevant history found in cass)";
+  }
+
+  return historySnippets.slice(0, 10).join("\n\n");
+}
+
+// ============================================================================
+// DEDUPLICATION
+// ============================================================================
+
+/**
+ * Compute a hash for a delta for deduplication.
+ */
+function hashDelta(delta: PlaybookDelta): string {
+  if (delta.type === "add") {
+    return `add:${delta.bullet.content?.toLowerCase()}`;
+  }
+  if (delta.type === "replace") {
+    return `replace:${delta.bulletId}:${delta.newContent}`;
+  }
+  if (delta.type === "merge") {
+    return `merge:${delta.bulletIds.join(",")}`;
+  }
+  if (delta.type === "deprecate") {
+    return `deprecate:${delta.bulletId}`;
+  }
+  // helpful, harmful
+  return `${delta.type}:${delta.bulletId}`;
+}
+
+/**
+ * Deduplicate deltas against existing ones.
+ */
+function deduplicateDeltas(
+  newDeltas: PlaybookDelta[],
+  existing: PlaybookDelta[]
+): PlaybookDelta[] {
+  const seen = new Set(existing.map(hashDelta));
+  return newDeltas.filter((d) => {
+    const h = hashDelta(d);
+    if (seen.has(h)) return false;
+    seen.add(h);
+    return true;
+  });
+}
+
+// ============================================================================
+// MAIN REFLECTION FUNCTION
+// ============================================================================
+
+/**
+ * Multi-iteration reflection on a session diary.
+ * Implements ACE pattern: Generator → Reflector → Curator → Validator
+ *
+ * WHY MULTI-ITERATION: First pass catches obvious insights.
+ * Subsequent passes catch nuances that might be missed.
+ *
+ * @param diary - Structured diary entry from the session
+ * @param playbook - Current playbook for context
+ * @param config - Configuration including maxReflectorIterations
+ * @returns Array of PlaybookDelta ready for curator/validator
+ */
+export async function reflectOnSession(
+  diary: DiaryEntry,
+  playbook: Playbook,
+  config: Config
+): Promise<PlaybookDelta[]> {
+  const allDeltas: PlaybookDelta[] = [];
+  const maxIterations = config.maxReflectorIterations ?? 3;
+
+  // Prepare context
+  const existingBullets = formatBulletsForPrompt(playbook.bullets);
+  const diaryContext = formatDiaryForPrompt(diary);
+  const cassHistory = await getCassHistoryForDiary(diary, config);
+
+  // Get LLM config
+  const llmConfig: LLMConfig = {
+    provider: config.llm?.provider as "openai" | "anthropic" | "google" ?? config.provider ?? "anthropic",
+    model: config.llm?.model ?? config.model ?? "claude-sonnet-4-20250514",
+  };
+
+  // Multi-iteration loop
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    // Build iteration note
+    let iterationNote = "";
+    if (iteration === 0) {
+      iterationNote =
+        "This is the FIRST pass. Focus on obvious, high-value insights.";
+    } else if (allDeltas.length > 0) {
+      const previousSummary = allDeltas
+        .map((d: PlaybookDelta) => {
+          if (d.type === "add") return `- ADD: ${d.bullet.content.slice(0, 60)}...`;
+          if (d.type === "helpful") return `- HELPFUL: bullet ${d.bulletId}`;
+          if (d.type === "harmful") return `- HARMFUL: bullet ${d.bulletId}`;
+          if (d.type === "replace") return `- REPLACE: bullet ${d.bulletId}`;
+          if (d.type === "deprecate") return `- DEPRECATE: bullet ${d.bulletId}`;
+          if (d.type === "merge") return `- MERGE: bullets ${d.bulletIds.join(", ")}`;
+          return `- ${(d as PlaybookDelta).type.toUpperCase()}`;
+        })
+        .join("\n");
+
+      iterationNote = `This is iteration ${iteration + 1}. Previous passes found:
+${previousSummary}
+
+Now look DEEPER. What subtle patterns did we miss? What edge cases? What nuances?
+Don't repeat what's already captured.`;
+    }
+
+    // Build prompt
+    const prompt = fillPrompt(PROMPTS.reflector, {
+      existingBullets,
+      diary: diaryContext,
+      cassHistory: truncateForPrompt(cassHistory, 10000),
+      iterationNote,
+    });
+
+    try {
+      const model = getModel(llmConfig);
+
+      const { object } = await generateObject({
+        model,
+        schema: ReflectorOutputSchema,
+        prompt,
+        temperature: 0.4, // Moderate creativity for insight generation
+      });
+
+      // Normalize deltas - inject sourceSession for add deltas
+      const validDeltas = object.deltas.map((d: PlaybookDelta) => {
+        if (d.type === "add") {
+          return { ...d, sourceSession: diary.sessionPath };
+        }
+        if (
+          (d.type === "helpful" || d.type === "harmful") &&
+          !d.sourceSession
+        ) {
+          return { ...d, sourceSession: diary.sessionPath };
+        }
+        return d;
+      });
+
+      // Deduplicate against what we've already found
+      const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
+      allDeltas.push(...uniqueDeltas);
+
+      // Early exit if no new insights
+      if (uniqueDeltas.length === 0) {
+        break;
+      }
+
+      // Cap total deltas
+      if (allDeltas.length >= 20) {
+        break;
+      }
+    } catch (error) {
+      console.error(`[reflect] LLM call failed on iteration ${iteration}: ${error}`);
+      // Continue to next iteration or exit if first
+      if (iteration === 0) {
+        return [];
+      }
+      break;
+    }
+  }
+
+  return allDeltas;
+}
+
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
+export {
+  formatBulletsForPrompt,
+  formatDiaryForPrompt,
+  getCassHistoryForDiary,
+  deduplicateDeltas,
+  hashDelta,
+};

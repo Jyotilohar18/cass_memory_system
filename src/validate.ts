@@ -1,180 +1,145 @@
-/**
- * src/validate.ts - Scientific validation for reflector output
- *
- * Validates LLM-generated deltas before applying to playbook
- */
+import {
+  Config,
+  PlaybookDelta,
+  EvidenceGateResult,
+  ValidationResult
+} from "./types.js";
+import { runValidator } from "./llm.js";
+import { safeCassSearch } from "./cass.js";
+import { extractKeywords, log } from "./utils.js";
 
-import { z } from 'zod';
-import { PlaybookDelta, PlaybookDeltaSchema, PlaybookBullet } from './types.js';
-import { warn, log } from './utils.js';
+// --- Pre-LLM Gate ---
 
-/**
- * Schema for the full reflector output (array of deltas)
- */
-const ReflectorOutputSchema = z.array(PlaybookDeltaSchema);
+export async function evidenceCountGate(
+  content: string,
+  config: Config
+): Promise<EvidenceGateResult> {
+  const keywords = extractKeywords(content);
+  // 2. Search cass
+  const hits = await safeCassSearch(keywords.join(" "), {
+    limit: 20,
+    days: config.validationLookbackDays
+  }, config.cassPath);
 
-/**
- * Validate and filter reflector output to only valid deltas.
- *
- * @param output - Raw output from LLM (string or parsed object)
- * @param existingBulletIds - Optional set of known bullet IDs for reference validation
- * @returns Array of valid PlaybookDelta objects
- */
-export function validateReflectorOutput(
-  output: unknown,
-  existingBulletIds?: Set<string>
-): PlaybookDelta[] {
-  // Step 1: Parse JSON if string
-  let parsed: unknown;
-  if (typeof output === 'string') {
-    try {
-      parsed = JSON.parse(output);
-    } catch (err) {
-      warn(`Failed to parse reflector output as JSON: ${err}`);
-      return [];
-    }
-  } else {
-    parsed = output;
-  }
+  // 3. Classify outcomes
+  let successCount = 0;
+  let failureCount = 0;
+  const sessions = new Set<string>();
 
-  // Step 2: Validate against schema
-  const result = ReflectorOutputSchema.safeParse(parsed);
-  if (!result.success) {
-    warn(`Reflector output failed schema validation: ${result.error.message}`);
-    // Try to salvage individual deltas
-    return salvageValidDeltas(parsed, existingBulletIds);
-  }
-
-  // Step 3: Additional validation per delta type
-  const validDeltas: PlaybookDelta[] = [];
-  for (const delta of result.data) {
-    const validation = validateSingleDelta(delta, existingBulletIds);
-    if (validation.valid) {
-      validDeltas.push(delta);
-    } else {
-      warn(`Invalid delta skipped: ${validation.reason}`);
+  for (const hit of hits) {
+    sessions.add(hit.source_path);
+    // Heuristic classification based on snippet text
+    // In a real system, we'd look up the actual session diary outcome,
+    // but snippet heuristics are a fast proxy.
+    const lower = hit.snippet.toLowerCase();
+    if (lower.includes("fixed") || lower.includes("success") || lower.includes("solved")) {
+      successCount++;
+    } else if (lower.includes("failed") || lower.includes("error") || lower.includes("broken")) {
+      failureCount++;
     }
   }
 
-  log(`Validated ${validDeltas.length}/${result.data.length} deltas`, true);
-  return validDeltas;
+  const sessionCount = sessions.size;
+
+  // 4. Gate Logic
+  if (sessionCount === 0) {
+    return {
+      passed: true, // Allow as draft (no evidence to contradict)
+      reason: "No historical evidence found. Proposing as draft.",
+      suggestedState: "draft",
+      sessionCount, successCount, failureCount
+    };
+  }
+
+  if (successCount >= 5 && failureCount === 0) {
+    return {
+      passed: true,
+      reason: `Strong success signal (${successCount} successes). Auto-accepting.`, 
+      suggestedState: "active", // Enough evidence to activate immediately
+      sessionCount, successCount, failureCount
+    };
+  }
+
+  if (failureCount >= 3 && successCount === 0) {
+    return {
+      passed: false,
+      reason: `Strong failure signal (${failureCount} failures). Auto-rejecting.`, 
+      suggestedState: "draft", // Irrelevant since passed=false
+      sessionCount, successCount, failureCount
+    };
+  }
+
+  // Ambiguous -> Needs LLM
+  return {
+    passed: true,
+    reason: "Evidence found but ambiguous. Proceeding to LLM validation.",
+    suggestedState: "draft",
+    sessionCount, successCount, failureCount
+  };
 }
 
-/**
- * Validate a single delta with type-specific checks.
- */
-function validateSingleDelta(
+// --- Format Evidence for LLM ---
+
+function formatEvidence(hits: any[]): string {
+  return hits.map((h: any) => `
+Session: ${h.source_path}
+Snippet: "${h.snippet}"
+Relevance: ${h.score}
+`).join("\n---\n");
+}
+
+// --- Main Validator ---
+
+export async function validateDelta(
   delta: PlaybookDelta,
-  existingBulletIds?: Set<string>
-): { valid: boolean; reason?: string } {
-  switch (delta.type) {
-    case 'add':
-      // Verify content and category are non-empty
-      if (!delta.bullet.content?.trim()) {
-        return { valid: false, reason: 'add delta has empty content' };
-      }
-      if (!delta.bullet.category?.trim()) {
-        return { valid: false, reason: 'add delta has empty category' };
-      }
-      return { valid: true };
+  config: Config
+): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult }> {
+  // Only validate "add" deltas
+  if (delta.type !== "add") return { valid: true };
+  
+  if (!config.validationEnabled) return { valid: true };
 
-    case 'helpful':
-    case 'harmful':
-      // Verify bulletId exists if we have reference data
-      if (existingBulletIds && !existingBulletIds.has(delta.bulletId)) {
-        return { valid: false, reason: `bulletId ${delta.bulletId} not found for ${delta.type}` };
-      }
-      return { valid: true };
+  const content = delta.bullet.content || "";
+  if (content.length < 20) return { valid: true }; // Too short to validate
 
-    case 'replace':
-      // Verify bulletId and newContent
-      if (existingBulletIds && !existingBulletIds.has(delta.bulletId)) {
-        return { valid: false, reason: `bulletId ${delta.bulletId} not found for replace` };
-      }
-      if (!delta.newContent?.trim()) {
-        return { valid: false, reason: 'replace delta has empty newContent' };
-      }
-      return { valid: true };
-
-    case 'deprecate':
-      // Verify bulletId exists
-      if (existingBulletIds && !existingBulletIds.has(delta.bulletId)) {
-        return { valid: false, reason: `bulletId ${delta.bulletId} not found for deprecate` };
-      }
-      return { valid: true };
-
-    case 'merge':
-      // Verify bulletIds and mergedContent
-      if (!delta.bulletIds?.length) {
-        return { valid: false, reason: 'merge delta has no bulletIds' };
-      }
-      if (existingBulletIds) {
-        for (const id of delta.bulletIds) {
-          if (!existingBulletIds.has(id)) {
-            return { valid: false, reason: `bulletId ${id} not found for merge` };
-          }
-        }
-      }
-      if (!delta.mergedContent?.trim()) {
-        return { valid: false, reason: 'merge delta has empty mergedContent' };
-      }
-      return { valid: true };
-
-    default:
-      return { valid: false, reason: `unknown delta type: ${(delta as any).type}` };
-  }
-}
-
-/**
- * Try to salvage valid deltas from malformed output.
- * Attempts to parse each item individually.
- */
-function salvageValidDeltas(
-  output: unknown,
-  existingBulletIds?: Set<string>
-): PlaybookDelta[] {
-  if (!Array.isArray(output)) {
-    return [];
+  // 1. Run Gate
+  const gate = await evidenceCountGate(content, config);
+  
+  if (!gate.passed) {
+    log(`Rule rejected by evidence gate: ${gate.reason}`);
+    return { valid: false, gate };
   }
 
-  const validDeltas: PlaybookDelta[] = [];
-  for (const item of output) {
-    const result = PlaybookDeltaSchema.safeParse(item);
-    if (result.success) {
-      const validation = validateSingleDelta(result.data, existingBulletIds);
-      if (validation.valid) {
-        validDeltas.push(result.data);
-      } else {
-        log(`Skipped invalid delta: ${validation.reason}`, true);
+  // If gate suggests "active", we might skip LLM if we trust the heuristic enough.
+  // But for V1, let's run LLM if we have sessions but it wasn't a slam dunk "5-0" auto-accept.
+  // Wait, the gate returns "active" only on 5-0.
+  if (gate.suggestedState === "active") {
+    return { 
+      valid: true, 
+      gate,
+      result: {
+        valid: true,
+        verdict: "ACCEPT",
+        confidence: 1.0,
+        reason: gate.reason,
+        evidence: []
       }
-    } else {
-      log(`Skipped malformed delta: ${JSON.stringify(item).slice(0, 100)}`, true);
-    }
+    };
   }
 
-  if (validDeltas.length > 0) {
-    log(`Salvaged ${validDeltas.length} valid deltas from malformed output`, true);
-  }
+  // 2. Run LLM
+  // Re-search for evidence to put in prompt? Or use hits from gate?
+  // Gate search was cheap/fast. Let's do a targeted search again or reuse if we refactored.
+  // For simplicity, re-search.
+  const keywords = extractKeywords(content);
+  const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath);
+  const formattedEvidence = formatEvidence(evidenceHits);
 
-  return validDeltas;
-}
+  const result = await runValidator(content, formattedEvidence, config);
 
-/**
- * Extract bullet IDs from an array of bullets for validation.
- */
-export function extractBulletIds(bullets: PlaybookBullet[]): Set<string> {
-  return new Set(bullets.map(b => b.id));
-}
-
-/**
- * Validate that a delta can be safely applied.
- * Used as a final check before mutation.
- */
-export function canApplyDelta(
-  delta: PlaybookDelta,
-  bullets: PlaybookBullet[]
-): { canApply: boolean; reason?: string } {
-  const ids = extractBulletIds(bullets);
-  const validation = validateSingleDelta(delta, ids);
-  return { canApply: validation.valid, reason: validation.reason };
+  return {
+    valid: result.valid,
+    result,
+    gate
+  };
 }
