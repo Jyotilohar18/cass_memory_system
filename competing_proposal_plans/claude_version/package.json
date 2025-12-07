@@ -1,0 +1,49 @@
+{
+  "name": "cass-reflect",
+  "version": "0.1.0",
+  "description": "Agent-Agnostic Reflection & Memory System - ACE pattern implementation for coding agents",
+  "type": "module",
+  "main": "cass-reflect.ts",
+  "bin": {
+    "cass-reflect": "./cass-reflect.ts"
+  },
+  "scripts": {
+    "start": "bun run cass-reflect.ts",
+    "build": "bun build --compile --minify cass-reflect.ts --outfile dist/cass-reflect",
+    "build:all": "bun run build:linux && bun run build:macos && bun run build:windows",
+    "build:linux": "bun build --compile --minify --target=bun-linux-x64 cass-reflect.ts --outfile dist/cass-reflect-linux-x64",
+    "build:macos": "bun build --compile --minify --target=bun-darwin-arm64 cass-reflect.ts --outfile dist/cass-reflect-darwin-arm64",
+    "build:windows": "bun build --compile --minify --target=bun-windows-x64 cass-reflect.ts --outfile dist/cass-reflect-windows-x64.exe",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ai": "^4.0.0",
+    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/google": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "reflection",
+    "memory",
+    "ace",
+    "llm",
+    "claude",
+    "cass"
+  ],
+  "author": "Jeff Emanuel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dicklesworthstone/cass-reflect"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
