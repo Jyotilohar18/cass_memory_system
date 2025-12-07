@@ -1,267 +1,186 @@
-// src/config.ts
-// Configuration loading/saving with cascading priority
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import yaml from "yaml";
+import { Config, ConfigSchema } from "./types.js";
+import { expandPath, fileExists, warn } from "./utils.js";
 
-import { homedir } from "os";
-import { join, dirname } from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
-import {
-  Config,
-  SanitizationConfig,
-  ScoringConfigSection,
-  LLMProvider
-} from "./types.js";
+// ---------------------------------------------------------------------------
+// Defaults (aligned with ConfigSchema in types.ts)
+// ---------------------------------------------------------------------------
 
-/**
- * Default sanitization configuration
- */
-export const DEFAULT_SANITIZATION_CONFIG: SanitizationConfig = {
-  enabled: true,
-  extraPatterns: [],
+export const DEFAULT_CONFIG: Config = {
+  schema_version: 1,
+  provider: "anthropic",
+  model: "claude-sonnet-4-20250514",
+  cassPath: "cass",
+  playbookPath: "~/.cass-memory/playbook.yaml",
+  diaryDir: "~/.cass-memory/diary",
+  maxReflectorIterations: 3,
+  autoReflect: false,
+  dedupSimilarityThreshold: 0.85,
+  pruneHarmfulThreshold: 3,
+  defaultDecayHalfLife: 90,
+  maxBulletsInContext: 50,
+  maxHistoryInContext: 10,
+  sessionLookbackDays: 7,
+  validationLookbackDays: 90,
+  scoring: {
+    decayHalfLifeDays: 90,
+    harmfulMultiplier: 4,
+    minFeedbackForActive: 1,
+    minHelpfulForProven: 10,
+    maxHarmfulRatioForProven: 0.1,
+  },
+  validationEnabled: true,
+  enrichWithCrossAgent: true,
+  semanticSearchEnabled: false,
+  verbose: false,
+  jsonOutput: false,
+  sanitization: {
+    enabled: true,
+    extraPatterns: [],
+  },
 };
 
-/**
- * Default scoring configuration
- */
-export const DEFAULT_SCORING_SECTION: ScoringConfigSection = {
-  decayHalfLifeDays: 90,
-  harmfulMultiplier: 4,
-  minFeedbackForActive: 3,
-  minHelpfulForProven: 10,
-  maxHarmfulRatioForProven: 0.1,
-};
+// Convenience accessors ------------------------------------------------------
 
-/**
- * Get the user-level config directory
- */
-export function getUserConfigDir(): string {
-  return join(homedir(), ".cass-memory");
-}
-
-/**
- * Get the user-level config file path
- */
 export function getUserConfigPath(): string {
-  return join(getUserConfigDir(), "config.json");
+  return expandPath("~/.cass-memory/config.json");
 }
 
-/**
- * Get the repo-level config path (if in a repo)
- */
-export function getRepoConfigPath(cwd: string = process.cwd()): string {
-  return join(cwd, ".cass", "config.yaml");
-}
-
-/**
- * Get default configuration
- */
 export function getDefaultConfig(): Config {
-  const userDir = getUserConfigDir();
   return {
-    schema_version: 1,
-
-    // LLM Provider
-    provider: "anthropic",
-    model: "claude-sonnet-4-20250514",
-
-    // Paths
-    playbookPath: join(userDir, "playbook.yaml"),
-    diaryDir: join(userDir, "diary"),
-    cassPath: "cass", // Assume in PATH
-
-    // Reflection settings
-    maxReflectorIterations: 2,
-    dedupSimilarityThreshold: 0.85,
-    pruneHarmfulThreshold: 5,
-
-    // Context settings
-    maxBulletsInContext: 20,
-    maxHistoryInContext: 5,
-
-    // Scoring settings
-    scoring: { ...DEFAULT_SCORING_SECTION },
-
-    // Session settings
-    sessionLookbackDays: 30,
-    validationLookbackDays: 90,
-
-    // Feature flags
-    validationEnabled: true,
-    autoReflect: false,
-    enrichWithCrossAgent: true,
-    semanticSearchEnabled: false,
-
-    // Sanitization (P12 - Security Critical)
-    sanitization: { ...DEFAULT_SANITIZATION_CONFIG },
-
-    // Logging
-    verbose: false,
-    jsonOutput: false,
+    ...DEFAULT_CONFIG,
+    sanitization: { ...DEFAULT_CONFIG.sanitization },
   };
 }
 
-/**
- * Deep merge two config objects, with source overriding target
- */
-function mergeConfig(target: Config, source: Partial<Config>): Config {
-  const result: Config = { ...target };
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
-  // Merge each top-level key
-  for (const key of Object.keys(source) as Array<keyof Config>) {
-    const sourceValue = source[key];
-    if (sourceValue === undefined) continue;
-
-    // Special handling for nested objects
-    if (key === "scoring" && sourceValue !== undefined) {
-      result.scoring = { ...target.scoring, ...(sourceValue as Partial<ScoringConfigSection>) };
-    } else if (key === "sanitization" && sourceValue !== undefined) {
-      result.sanitization = { ...target.sanitization, ...(sourceValue as Partial<SanitizationConfig>) };
-    } else {
-      // Direct assignment for primitive values
-      (result as unknown as Record<string, unknown>)[key] = sourceValue;
-    }
-  }
-
-  return result;
+async function detectRepoConfig(cwd: string): Promise<string | null> {
+  const cassDir = path.join(cwd, ".cass");
+  const candidate = path.join(cassDir, "config.yaml");
+  if (await fileExists(candidate)) return candidate;
+  return null;
 }
 
-/**
- * Try to load a JSON config file, return null if not found or invalid
- */
-function tryLoadJsonConfig(path: string): Partial<Config> | null {
+function normalizeKeys(obj: any): any {
+  if (Array.isArray(obj)) return obj.map(normalizeKeys);
+  if (obj && typeof obj === "object") {
+    const out: any = {};
+    for (const key of Object.keys(obj)) {
+      const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      out[camel] = normalizeKeys(obj[key]);
+    }
+    return out;
+  }
+  return obj;
+}
+
+async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
+  const expanded = expandPath(filePath);
+  if (!(await fileExists(expanded))) return {};
+
   try {
-    if (!existsSync(path)) {
-      return null;
+    const content = await fs.readFile(expanded, "utf-8");
+    const ext = path.extname(expanded).toLowerCase();
+    if (ext === ".yaml" || ext === ".yml") {
+      return normalizeKeys(yaml.parse(content));
     }
-    const content = readFileSync(path, "utf-8");
-    return JSON.parse(content) as Partial<Config>;
-  } catch {
-    return null;
+    return JSON.parse(content);
+  } catch (err: any) {
+    warn(`Failed to load config ${expanded}: ${err.message}`);
+    return {};
   }
 }
 
-/**
- * Try to load a YAML config file, return null if not found or invalid
- * Note: Requires yaml package import when used
- */
-async function tryLoadYamlConfig(path: string): Promise<Partial<Config> | null> {
-  try {
-    if (!existsSync(path)) {
-      return null;
-    }
-    const { parse } = await import("yaml");
-    const content = readFileSync(path, "utf-8");
-    return parse(content) as Partial<Config>;
-  } catch {
-    return null;
+function deepMergeConfig(base: Config, override: Partial<Config>): Config {
+  const merged: Config = { ...base, ...override } as Config;
+
+  // Sanitization needs deep merge
+  merged.sanitization = {
+    ...base.sanitization,
+    ...(override.sanitization || {}),
+  };
+
+  // Nested llm (if present in overrides) should override provider/model
+  if ((override as any).llm) {
+    const llm = (override as any).llm;
+    merged.provider = llm.provider ?? merged.provider;
+    merged.model = llm.model ?? merged.model;
   }
+
+  return merged;
 }
 
-/**
- * Load configuration with cascading priority:
- * 1. CLI overrides (highest)
- * 2. Repo-level config (.cass/config.yaml)
- * 3. User-level config (~/.cass-memory/config.json)
- * 4. Built-in defaults (lowest)
- *
- * @param cliOverrides - Command-line overrides (highest priority)
- * @param cwd - Current working directory (for repo-level config)
- * @returns Merged configuration
- */
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 export async function loadConfig(
-  cliOverrides?: Partial<Config>,
+  cliOverrides: Partial<Config> = {},
   cwd: string = process.cwd()
 ): Promise<Config> {
-  // Start with defaults
-  let config = getDefaultConfig();
+  const userConfig = await loadConfigFile(getUserConfigPath());
+  const repoConfigPath = await detectRepoConfig(cwd);
+  const repoConfig = repoConfigPath ? await loadConfigFile(repoConfigPath) : {};
 
-  // Layer 1: User-level config
-  const userConfig = tryLoadJsonConfig(getUserConfigPath());
-  if (userConfig) {
-    config = mergeConfig(config, userConfig);
+  let merged = getDefaultConfig();
+  merged = deepMergeConfig(merged, userConfig);
+  merged = deepMergeConfig(merged, repoConfig);
+  merged = deepMergeConfig(merged, cliOverrides);
+
+  const validated = ConfigSchema.safeParse(merged);
+  if (!validated.success) {
+    throw new Error(`Configuration validation failed: ${validated.error.message}`);
   }
 
-  // Layer 2: Repo-level config
-  const repoConfig = await tryLoadYamlConfig(getRepoConfigPath(cwd));
-  if (repoConfig) {
-    config = mergeConfig(config, repoConfig);
+  // Verbose env override
+  if (process.env.CASS_MEMORY_VERBOSE === "1" || process.env.CASS_MEMORY_VERBOSE === "true") {
+    validated.data.verbose = true;
   }
 
-  // Layer 3: CLI overrides
-  if (cliOverrides) {
-    config = mergeConfig(config, cliOverrides);
-  }
-
-  return config;
+  return validated.data;
 }
 
-/**
- * Save configuration to user-level config file
- * Note: Only saves to user level, not repo level
- *
- * @param config - Configuration to save
- */
-export function saveConfig(config: Config): void {
-  const configDir = getUserConfigDir();
+export async function saveConfig(config: Config): Promise<void> {
   const configPath = getUserConfigPath();
-
-  // Ensure directory exists
-  if (!existsSync(configDir)) {
-    mkdirSync(configDir, { recursive: true });
-  }
-
-  // Write config atomically
-  const tempPath = configPath + ".tmp";
-  writeFileSync(tempPath, JSON.stringify(config, null, 2), "utf-8");
-
-  // Rename is atomic on POSIX
-  const { renameSync } = require("fs");
-  renameSync(tempPath, configPath);
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  const tmp = `${configPath}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(config, null, 2), "utf-8");
+  await fs.rename(tmp, configPath);
 }
 
-/**
- * Ensure required directories exist based on config
- *
- * @param config - Configuration to initialize directories for
- */
-export function ensureConfigDirs(config: Config): void {
+export async function ensureConfigDirs(config: Config): Promise<void> {
   const dirs = [
-    dirname(config.playbookPath),
-    config.diaryDir,
+    expandPath(path.dirname(config.playbookPath)),
+    expandPath(config.diaryDir),
   ];
-
   for (const dir of dirs) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+    await fs.mkdir(dir, { recursive: true });
   }
 }
 
 /**
- * Get a sanitization config ready for use with sanitize()
- * Converts extraPatterns from strings to the format expected by sanitize module
- *
- * @param config - Full config or just sanitization section
- * @returns Sanitization config in format expected by sanitize module
+ * Compile sanitization settings into the format expected by sanitize().
+ * Converts user-provided pattern strings into RegExp instances; skips invalid patterns.
  */
-export function getSanitizeConfig(
-  config: Config | SanitizationConfig
-): { enabled: boolean; extraPatterns?: Array<{ pattern: RegExp; replacement: string }> } {
-  const sanitizationConfig = "sanitization" in config ? config.sanitization : config;
+export function getSanitizeConfig(config: Config): { enabled: boolean; extraPatterns?: RegExp[] } {
+  const { sanitization } = config;
+  if (!sanitization?.enabled) return { enabled: false };
 
-  if (!sanitizationConfig.enabled) {
-    return { enabled: false };
-  }
+  const compiled =
+    sanitization.extraPatterns?.reduce<RegExp[]>((acc, patternStr) => {
+      try {
+        acc.push(new RegExp(patternStr, "gi"));
+      } catch {
+        warn(`Invalid sanitization pattern skipped: ${patternStr}`);
+      }
+      return acc;
+    }, []) ?? [];
 
-  // Compile extra patterns if provided
-  const extraPatterns = sanitizationConfig.extraPatterns.length > 0
-    ? sanitizationConfig.extraPatterns.map((patternStr) => ({
-        pattern: new RegExp(patternStr, "gi"),
-        replacement: "[USER_SECRET]",
-      }))
-    : undefined;
-
-  return {
-    enabled: true,
-    extraPatterns,
-  };
+  return { enabled: true, extraPatterns: compiled.length ? compiled : undefined };
 }

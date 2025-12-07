@@ -107,12 +107,12 @@ export type PlaybookBullet = z.infer<typeof PlaybookBulletSchema>;
 export const NewBulletDataSchema = z.object({
   category: z.string(),
   content: z.string(),
-  tags: z.array(z.string()).default([]),
+  tags: z.array(z.string()).optional().default([]),
   searchPointer: z.string().optional(),
-  scope: BulletScopeEnum.default('global'),
+  scope: BulletScopeEnum.optional().default('global'),
   workspace: z.string().optional(),
-  kind: BulletKindEnum.default('stack_pattern'),
-  type: BulletTypeEnum.default('rule')
+  kind: BulletKindEnum.optional().default('stack_pattern'),
+  type: BulletTypeEnum.optional().default('rule')
 });
 export type NewBulletData = z.infer<typeof NewBulletDataSchema>;
 
@@ -284,8 +284,6 @@ export const ConfigSchema = z.object({
   semanticSearchEnabled: z.boolean().default(false),
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
-  // Scoring
-  scoring: ScoringConfigSectionSchema.default({}),
   // Sanitization
   sanitization: z.object({
     enabled: z.boolean().default(true),
@@ -356,6 +354,16 @@ export type ContextResult = z.infer<typeof ContextResultSchema>;
 // ============================================================================
 // VALIDATION TYPES (Scientific validation)
 // ============================================================================
+
+export const EvidenceGateResultSchema = z.object({
+  passed: z.boolean(),
+  reason: z.string(),
+  suggestedState: z.enum(['draft', 'active', 'retired']).optional(),
+  sessionCount: z.number(),
+  successCount: z.number(),
+  failureCount: z.number()
+});
+export type EvidenceGateResult = z.infer<typeof EvidenceGateResultSchema>;
 
 export const ValidationEvidenceSchema = z.object({
   sessionPath: z.string(),
@@ -518,6 +526,24 @@ export type SearchPlan = z.infer<typeof SearchPlanSchema>;
 // ============================================================================
 // EXPORTED SCHEMAS (for LLM generateObject)
 // ============================================================================
+
+export interface InversionReport {
+  originalId: string;
+  originalContent: string;
+  newId: string;
+  invertedContent: string;
+  reason: string;
+}
+
+export interface CurationResult {
+  playbook: Playbook;
+  applied: number;
+  skipped: number;
+  conflicts: string[];
+  promotions: string[];
+  inversions: InversionReport[];
+  pruned: number;
+}
 
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,
