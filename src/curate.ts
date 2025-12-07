@@ -210,8 +210,11 @@ export function curatePlaybook(
           // Create merged
           const merged = addBullet(playbook, {
             content: delta.mergedContent,
-            category: bulletsToMerge[0].category, // Inherit category
-            tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
+            category: delta.bulletIds[0] ? findBullet(playbook, delta.bulletIds[0])?.category || "uncategorized" : "uncategorized",
+            tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))],
+            type: "rule",
+            kind: "stack_pattern",
+            scope: "global"
           }, "merged"); // Source?
           
           // Deprecate originals
