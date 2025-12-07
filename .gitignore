@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# Python / uv
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+.python-version
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Packaging and build artifacts
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Testing and coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Tool caches and notebooks
+.cache/
+.ipynb_checkpoints/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
