@@ -183,3 +183,201 @@ export function getAvailableProviders(): LLMProvider[] {
     isLLMAvailable(provider)
   );
 }
+
+// --- Prompt Templates ---
+
+/**
+ * Prompt templates for LLM operations.
+ * These are tuned for structured extraction with Zod schemas.
+ */
+export const PROMPTS = {
+  /**
+   * Extract structured diary from a session.
+   * Temperature: 0.3 (low for consistency)
+   */
+  diary: `You are analyzing a coding agent session to extract structured insights.
+
+SESSION METADATA:
+- Path: {sessionPath}
+- Agent: {agent}
+- Workspace: {workspace}
+
+SESSION CONTENT:
+{content}
+
+INSTRUCTIONS:
+Extract the following from this session. Be SPECIFIC and ACTIONABLE.
+Avoid generic statements like "wrote code" or "fixed bug".
+Include specific:
+- File names and paths
+- Function/class/component names
+- Error messages and stack traces
+- Commands run
+- Tools used
+
+If the session lacks information for a field, provide an empty array.
+
+Respond with JSON matching this schema:
+{
+  "status": "success" | "failure" | "mixed",
+  "accomplishments": string[],  // Specific completed tasks with file/function names
+  "decisions": string[],        // Design choices with rationale
+  "challenges": string[],       // Problems encountered, errors, blockers
+  "preferences": string[],      // User style revelations
+  "keyLearnings": string[],     // Reusable insights
+  "tags": string[],             // Discovery keywords
+  "searchAnchors": string[]     // Search phrases for future retrieval
+}`,
+
+  /**
+   * Extract deltas (changes) from diary for playbook.
+   * Multi-iteration capable.
+   */
+  reflector: `You are analyzing a coding session diary to extract reusable lessons for a playbook.
+
+EXISTING PLAYBOOK RULES:
+{existingBullets}
+
+SESSION DIARY:
+{diary}
+
+RELEVANT CASS HISTORY:
+{cassHistory}
+
+{iterationNote}
+
+INSTRUCTIONS:
+Extract playbook deltas (changes) from this session. Each delta should be:
+- SPECIFIC: Bad: "Write tests". Good: "For React hooks, test effects separately with renderHook"
+- ACTIONABLE: Include concrete examples, file patterns, command flags
+- REUSABLE: Would help a DIFFERENT agent on a similar problem
+
+Delta types:
+- add: New insight not covered by existing bullets
+- helpful: Existing bullet proved useful (reference by ID)
+- harmful: Existing bullet caused problems (reference by ID, explain why)
+- replace: Existing bullet needs updated wording
+- deprecate: Existing bullet is outdated
+
+Maximum 20 deltas per reflection. Focus on quality over quantity.`,
+
+  /**
+   * Validate a proposed rule against evidence.
+   */
+  validator: `You are a scientific validator checking if a proposed rule is supported by historical evidence.
+
+PROPOSED RULE:
+{proposedRule}
+
+HISTORICAL EVIDENCE (from cass search):
+{evidence}
+
+INSTRUCTIONS:
+Analyze whether the evidence supports, contradicts, or is neutral toward the proposed rule.
+
+Consider:
+1. How many sessions show success when following this pattern?
+2. How many sessions show failure when following this pattern?
+3. Are there edge cases or conditions where the rule doesn't apply?
+4. Is the rule too broad or too specific?
+
+Respond with:
+{
+  "valid": boolean,
+  "confidence": number,  // 0.0-1.0
+  "reason": string,
+  "refinedContent": string | null,  // Suggested improvement if partially valid
+  "evidence": { supporting: string[], contradicting: string[] }
+}`,
+
+  /**
+   * Generate pre-task context briefing.
+   */
+  context: `You are preparing a context briefing for a coding task.
+
+TASK DESCRIPTION:
+{task}
+
+RELEVANT PLAYBOOK RULES:
+{bullets}
+
+RELEVANT SESSION HISTORY:
+{history}
+
+DEPRECATED PATTERNS TO AVOID:
+{deprecatedPatterns}
+
+INSTRUCTIONS:
+Create a concise briefing that:
+1. Summarizes the most relevant rules for this task
+2. Highlights any pitfalls or anti-patterns to avoid
+3. Suggests relevant cass searches for deeper context
+4. Notes any deprecated patterns that might come up
+
+Keep the briefing actionable and under 500 words.`,
+
+  /**
+   * Audit a session for rule violations.
+   */
+  audit: `You are auditing a coding session to check if established rules were followed.
+
+SESSION CONTENT:
+{sessionContent}
+
+RULES TO CHECK:
+{rulesToCheck}
+
+INSTRUCTIONS:
+For each rule, determine if the session:
+- FOLLOWED the rule (with evidence)
+- VIOLATED the rule (with evidence)
+- Rule was NOT APPLICABLE to this session
+
+Respond with:
+{
+  "results": [
+    {
+      "ruleId": string,
+      "status": "followed" | "violated" | "not_applicable",
+      "evidence": string
+    }
+  ],
+  "summary": string
+}`,
+} as const;
+
+/**
+ * Fill prompt template with values.
+ *
+ * @param template - Prompt template with {placeholders}
+ * @param values - Object with placeholder values
+ * @returns Filled prompt string
+ */
+export function fillPrompt(
+  template: string,
+  values: Record<string, string>
+): string {
+  let result = template;
+  for (const [key, value] of Object.entries(values)) {
+    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+  }
+  return result;
+}
+
+/**
+ * Truncate content to avoid token limits.
+ * Keeps beginning and end, truncates middle.
+ *
+ * @param content - Content to truncate
+ * @param maxChars - Maximum characters (default 50000)
+ * @returns Truncated content
+ */
+export function truncateForPrompt(content: string, maxChars = 50000): string {
+  if (content.length <= maxChars) return content;
+
+  const keepChars = Math.floor((maxChars - 100) / 2);
+  const beginning = content.slice(0, keepChars);
+  const ending = content.slice(-keepChars);
+
+  return `${beginning}\n\n[... ${content.length - maxChars} characters truncated ...]\n\n${ending}`;
+}
