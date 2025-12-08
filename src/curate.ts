@@ -361,7 +361,7 @@ export function curatePlaybook(
         antiPatternId: antiPattern.id,
         antiPatternContent: antiPattern.content,
         bulletId: bullet.id,
-        reason: `Marked as toxic/anti-pattern`
+        reason: `Marked as blocked/anti-pattern`
       });
     }
   }

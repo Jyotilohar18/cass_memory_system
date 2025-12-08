@@ -1034,13 +1034,13 @@ bullets: []
       created.push("playbook.yaml");
   }
   
-  // toxic_bullets.log
-  const toxicPath = path.join(globalDir, "toxic_bullets.log");
-  if (await fileExists(toxicPath)) {
-      existed.push("toxic_bullets.log");
+  // blocked.log - global blocklist
+  const blockedPath = path.join(globalDir, "blocked.log");
+  if (await fileExists(blockedPath)) {
+      existed.push("blocked.log");
   } else {
-      await atomicWrite(toxicPath, "");
-      created.push("toxic_bullets.log");
+      await atomicWrite(blockedPath, "");
+      created.push("blocked.log");
   }
 
   // usage.jsonl
@@ -1061,7 +1061,7 @@ bullets: []
  *
  * Creates:
  * - .cass/playbook.yaml (empty playbook for project-specific rules)
- * - .cass/toxic.log (empty blocklist file)
+ * - .cass/blocked.log (empty blocklist file)
  *
  * Does NOT create config.yaml by default (only created when project
  * needs to override global settings).
@@ -1108,14 +1108,14 @@ bullets: []
     created.push("playbook.yaml");
   }
 
-  // 2. toxic.log - Project-specific blocked patterns (JSONL format)
-  const toxicPath = path.join(cassDir, "toxic.log");
-  if (await fileExists(toxicPath)) {
-    existed.push("toxic.log");
+  // 2. blocked.log - Project-specific blocked patterns (JSONL format)
+  const blockedPath = path.join(cassDir, "blocked.log");
+  if (await fileExists(blockedPath)) {
+    existed.push("blocked.log");
   } else {
     // Create empty file (JSONL format - one JSON object per line)
-    await atomicWrite(toxicPath, "");
-    created.push("toxic.log");
+    await atomicWrite(blockedPath, "");
+    created.push("blocked.log");
   }
 
   // Note: config.yaml is NOT created by default
@@ -1183,14 +1183,17 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
 
 export function hashContent(content: string): string {
   if (!content) return crypto.createHash("sha256").update("").digest("hex").substring(0, 16);
-  
+
   const normalized = content
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
-    
+
   return crypto.createHash("sha256").update(normalized).digest("hex").substring(0, 16);
 }
+
+// Alias for backward compatibility - some modules import as contentHash
+export const contentHash = hashContent;
 
 export function tokenize(text: string): string[] {
   if (!text) return [];

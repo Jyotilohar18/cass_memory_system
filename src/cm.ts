@@ -141,7 +141,7 @@ program.command("reflect")
 
 // --- Forget ---
 program.command("forget")
-  .description("Deprecate a rule and optionally add to toxic blocklist")
+  .description("Deprecate a rule and optionally add to blocked list")
   .argument("<bulletId>", "ID of the rule to forget")
   .option("--reason <text>", "Reason for forgetting (required)")
   .option("--invert", "Create inverted anti-pattern from the rule")
