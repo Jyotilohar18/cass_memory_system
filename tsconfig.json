@@ -15,6 +15,10 @@
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
-    "allowJs": true
-  }
+    "allowJs": true,
+    "typeRoots": ["./node_modules"],
+    "types": ["bun", "node", "diff-match-patch"]
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "competing_proposal_plans"]
 }

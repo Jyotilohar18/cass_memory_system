@@ -1,3 +1,60 @@
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# TypeScript artifacts (compiled JS/d.ts)
+*.js.map
+*.d.ts
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+config.json
+*.key
+*.pem
+*.p12
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# IDE & OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Bun
+bun.lockb
+
+# CASS memory system (local/ephemeral)
+.cass/config.yaml
+diary/*.md
+usage.jsonl
 # macOS
 .DS_Store
 
