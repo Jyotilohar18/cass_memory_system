@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { expandPath } from "./utils.js";
 
 // ============================================================================
 // ENUMS & CONSTANTS
@@ -241,7 +242,7 @@ export const SanitizationConfigSchema = z.object({
   enabled: z.boolean().default(true),
   extraPatterns: z.array(z.string()).default([]),
   auditLog: z.boolean().default(false),
-  // auditLevel removed
+  auditLevel: z.enum(["info", "debug"]).default("info"),
 });
 export type SanitizationConfig = z.infer<typeof SanitizationConfigSchema>;
 
@@ -254,35 +255,44 @@ export const ScoringConfigSectionSchema = z.object({
 });
 export type ScoringConfigSection = z.infer<typeof ScoringConfigSectionSchema>;
 
-export const ConfigSchema = z.object({
-  schema_version: z.number().default(1),
-  llm: z.object({
-    provider: z.string().default("anthropic"),
-    model: z.string().default("claude-sonnet-4-20250514")
-  }).optional(),
-  provider: LLMProviderEnum.default("anthropic"),
-  model: z.string().default("claude-sonnet-4-20250514"),
-  cassPath: z.string().default("cass"),
-  playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
-  diaryDir: z.string().default("~/.cass-memory/diary"),
-  diaryPath: z.string().optional(),
-  scoring: ScoringConfigSectionSchema.default({}),
-  maxReflectorIterations: z.number().default(3),
-  autoReflect: z.boolean().default(false),
-  dedupSimilarityThreshold: z.number().default(0.85),
-  pruneHarmfulThreshold: z.number().default(3),
-  defaultDecayHalfLife: z.number().default(90),
-  maxBulletsInContext: z.number().default(50),
-  maxHistoryInContext: z.number().default(10),
-  sessionLookbackDays: z.number().default(7),
-  validationLookbackDays: z.number().default(90),
-  validationEnabled: z.boolean().default(true),
-  enrichWithCrossAgent: z.boolean().default(true),
-  semanticSearchEnabled: z.boolean().default(false),
-  verbose: z.boolean().default(false),
-  jsonOutput: z.boolean().default(false),
-  sanitization: SanitizationConfigSchema.default({})
-});
+const PathString = z.string().transform((p) => expandPath(p));
+
+export const ConfigSchema = z
+  .object({
+    schema_version: z.number().default(1).describe("Config file version"),
+    llm: z
+      .object({
+        provider: z.string().default("anthropic"),
+        model: z.string().default("claude-sonnet-4-20250514"),
+      })
+      .optional(),
+    provider: LLMProviderEnum.default("anthropic"),
+    model: z.string().default("claude-sonnet-4-20250514"),
+    cassPath: PathString.default("cass").describe("Path to cass executable"),
+    playbookPath: PathString.default("~/.cass-memory/playbook.yaml"),
+    diaryDir: PathString.default("~/.cass-memory/diary"),
+    diaryPath: PathString.optional(),
+    scoring: ScoringConfigSectionSchema.default({}),
+    maxReflectorIterations: z.number().min(1).max(10).default(3),
+    autoReflect: z.boolean().default(false),
+    dedupSimilarityThreshold: z.number().min(0).max(1).default(0.85),
+    pruneHarmfulThreshold: z.number().min(1).max(10).default(3),
+    defaultDecayHalfLife: z.number().min(1).default(90),
+    maxBulletsInContext: z.number().min(5).max(200).default(50),
+    maxHistoryInContext: z.number().min(3).max(50).default(10),
+    sessionLookbackDays: z.number().min(1).max(365).default(7),
+    validationLookbackDays: z.number().min(30).max(365).default(90),
+    validationEnabled: z.boolean().default(true),
+    enrichWithCrossAgent: z.boolean().default(true),
+    semanticSearchEnabled: z.boolean().default(false),
+    verbose: z.boolean().default(false),
+    jsonOutput: z.boolean().default(false),
+    sanitization: SanitizationConfigSchema.default({}),
+  })
+  .refine(
+    (cfg) => cfg.maxBulletsInContext >= cfg.maxHistoryInContext,
+    "maxBulletsInContext must be >= maxHistoryInContext"
+  );
 export type Config = z.infer<typeof ConfigSchema>;
 
 // ============================================================================

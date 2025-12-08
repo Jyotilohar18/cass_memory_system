@@ -2,11 +2,13 @@
 // Reflector Pipeline - ACE Pattern Multi-Iteration Reflection
 // Extracts reusable insights from session diaries into playbook deltas
 
+import path from "node:path";
 import { z } from "zod";
 import { generateObject } from "ai";
 import {
   Config,
   DiaryEntry,
+  CassHit,
   Playbook,
   PlaybookBullet,
   PlaybookDelta,
@@ -14,6 +16,7 @@ import {
 } from "./types.js";
 import { getModel, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
+import { truncate } from "./utils.js";
 
 // ============================================================================
 // SCHEMAS FOR LLM OUTPUT
@@ -170,6 +173,35 @@ async function getCassHistoryForDiary(
   }
 
   return historySnippets.slice(0, 10).join("\n\n");
+}
+
+/**
+ * Format Cass hits for reflector/validator prompts.
+ */
+export function formatCassHistory(hits: CassHit[]): string {
+  const header = "RELATED HISTORY FROM OTHER AGENTS:";
+  if (!hits || hits.length === 0) {
+    return `${header}\n\n(None found)`;
+  }
+
+  const lines: string[] = [header, ""];
+  const max = Math.min(hits.length, 5);
+
+  for (let i = 0; i < max; i++) {
+    const hit = hits[i];
+    const rawPath = hit.source_path || (hit as any).sessionPath || "";
+    const rel = rawPath ? path.relative(process.cwd(), rawPath) : "";
+    const displayPath =
+      rawPath && rel && rel.length < rawPath.length ? rel : rawPath || "unknown";
+    const snippet = truncate(hit.snippet || "", 200);
+
+    lines.push(`Session: ${displayPath}`);
+    lines.push(`Agent: ${hit.agent || "unknown"}`);
+    lines.push(`Snippet: "${snippet}"`);
+    if (i < max - 1) lines.push("---");
+  }
+
+  return lines.join("\n");
 }
 
 // ============================================================================

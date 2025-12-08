@@ -1,11 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import yaml from "yaml";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { Config, ConfigSchema } from "./types.js";
-import { expandPath, fileExists, log, warn } from "./utils.js";
+import { Config, ConfigSchema, SanitizationConfig } from "./types.js";
+import { expandPath, fileExists, log, warn, atomicWrite } from "./utils.js";
 
 const execAsync = promisify(exec);
 
@@ -42,47 +41,25 @@ export const DEFAULT_CONFIG: Config = {
   sanitization: {
     enabled: true,
     extraPatterns: [],
-    auditLog: false
+    auditLog: false,
+    auditLevel: "info",
   },
 };
 
 export function getDefaultConfig(): Config {
-  return {
-    ...DEFAULT_CONFIG,
-    sanitization: { ...DEFAULT_CONFIG.sanitization }
-  };
-}
-
-export function getUserConfigPath(): string {
-  return expandPath("~/.cass-memory/config.json");
-}
-
-export async function ensureConfigDirs(config: Config): Promise<void> {
-  const dirs = [
-    path.dirname(expandPath(config.playbookPath)),
-    expandPath(config.diaryDir)
-  ];
-
-  for (const dir of dirs) {
-    await fs.mkdir(dir, { recursive: true });
+  // structuredClone is available in modern runtimes (Node 18+/Bun). Fallback keeps this safe if absent.
+  if (typeof structuredClone === "function") {
+    return structuredClone(DEFAULT_CONFIG);
   }
+  return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 }
 
-export function getSanitizeConfig(config: Config): { enabled: boolean; extraPatterns?: RegExp[] } {
-  const { sanitization } = config;
-  if (!sanitization?.enabled) return { enabled: false };
-
-  const compiled =
-    sanitization.extraPatterns?.reduce<RegExp[]>((acc, patternStr) => {
-      try {
-        acc.push(new RegExp(patternStr, "gi"));
-      } catch {
-        warn(`Invalid sanitization pattern skipped: ${patternStr}`);
-      }
-      return acc;
-    }, []) ?? [];
-
-  return { enabled: true, extraPatterns: compiled.length ? compiled : undefined };
+export function getSanitizeConfig(config?: Config): SanitizationConfig {
+  const conf = config?.sanitization ?? DEFAULT_CONFIG.sanitization;
+  return {
+    ...DEFAULT_CONFIG.sanitization,
+    ...conf,
+  };
 }
 
 // --- Repo Context ---
@@ -139,31 +116,26 @@ function normalizeConfigKeys(obj: any): any {
 }
 
 export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Config> {
-  // 1. User Global Config
   const globalConfigPath = expandPath("~/.cass-memory/config.json");
   const globalConfig = await loadConfigFile(globalConfigPath);
 
-  // 2. Repo Config
   let repoConfig: Partial<Config> = {};
   const repoContext = await detectRepoContext();
   if (repoContext.cassDir) {
     repoConfig = await loadConfigFile(path.join(repoContext.cassDir, "config.yaml"));
   }
 
-  // 3. Merge: Defaults -> Global -> Repo -> CLI
   const merged = {
     ...DEFAULT_CONFIG,
     ...globalConfig,
     ...repoConfig,
     ...cliOverrides,
-    // Deep merge sanitization
     sanitization: {
       ...DEFAULT_CONFIG.sanitization,
       ...(globalConfig.sanitization || {}),
       ...(repoConfig.sanitization || {}),
       ...(cliOverrides.sanitization || {}),
     },
-    // Deep merge scoring
     scoring: {
         ...DEFAULT_CONFIG.scoring,
         ...(globalConfig.scoring || {}),
@@ -172,7 +144,6 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     }
   };
 
-  // 4. Validate
   const result = ConfigSchema.safeParse(merged);
   if (!result.success) {
     warn(`Invalid configuration detected: ${result.error.message}`);
@@ -188,5 +159,5 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
 
 export async function saveConfig(config: Config): Promise<void> {
   const globalConfigPath = expandPath("~/.cass-memory/config.json");
-  await fs.writeFile(globalConfigPath, JSON.stringify(config, null, 2));
+  await atomicWrite(globalConfigPath, JSON.stringify(config, null, 2));
 }
