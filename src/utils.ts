@@ -829,6 +829,94 @@ export function expandPath(p: string): string {
   return p;
 }
 
+/**
+ * Normalize a path for the current platform.
+ * - Expands ~ to home directory
+ * - Converts separators to platform-native
+ * - Resolves . and .. components
+ * - Removes redundant separators
+ * - Returns absolute path
+ */
+export function normalizePlatformPath(p: string): string {
+  if (!p) return "";
+
+  // First expand tilde
+  let result = expandPath(p);
+
+  // Convert backslashes to forward slashes for consistent processing
+  result = result.replace(/\\/g, "/");
+
+  // Use path.resolve to get absolute path and normalize . and ..
+  result = path.resolve(result);
+
+  // path.normalize handles redundant separators and converts to platform-native
+  result = path.normalize(result);
+
+  return result;
+}
+
+/**
+ * Convert all path separators to forward slashes.
+ * Useful for consistent storage/comparison across platforms.
+ */
+export function toForwardSlashes(p: string): string {
+  if (!p) return "";
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * Convert path separators to the native platform separator.
+ * On Windows: forward slashes → backslashes
+ * On Unix: backslashes → forward slashes
+ */
+export function toNativeSeparators(p: string): string {
+  if (!p) return "";
+  if (path.sep === "\\") {
+    // Windows: convert forward slashes to backslashes
+    return p.replace(/\//g, "\\");
+  } else {
+    // Unix: convert backslashes to forward slashes
+    return p.replace(/\\/g, "/");
+  }
+}
+
+/**
+ * Cross-platform check for absolute paths.
+ * Recognizes:
+ * - Unix absolute paths: /path/to/file
+ * - Windows drive letters: C:\path, D:/path
+ * - UNC paths: \\server\share, //server/share
+ */
+export function isAbsolutePath(p: string): boolean {
+  if (!p) return false;
+
+  // Unix absolute path
+  if (p.startsWith("/")) return true;
+
+  // Windows drive letter (C:, D:, etc.)
+  if (/^[a-zA-Z]:/.test(p)) return true;
+
+  // UNC path (\\server\share or //server/share)
+  if (p.startsWith("\\\\") || p.startsWith("//")) return true;
+
+  return false;
+}
+
+/**
+ * Join path segments with tilde expansion on the first segment.
+ * Uses platform-native separators.
+ */
+export function joinPath(...segments: string[]): string {
+  if (segments.length === 0) return "";
+
+  // Expand tilde on first segment only
+  const first = expandPath(segments[0]);
+  const rest = segments.slice(1);
+
+  // Join and normalize
+  return path.normalize(path.join(first, ...rest));
+}
+
 export async function ensureDir(dir: string): Promise<void> {
   const expanded = expandPath(dir);
   try {
