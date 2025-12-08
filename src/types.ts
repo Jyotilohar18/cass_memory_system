@@ -271,7 +271,6 @@ export const ConfigSchema = z.object({
   cassPath: z.string().default("cass"),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
   diaryDir: z.string().default("~/.cass-memory/diary"),
-  diaryPath: z.string().optional(),
   scoring: ScoringConfigSectionSchema.default({}),
   maxReflectorIterations: z.number().default(3),
   autoReflect: z.boolean().default(false),
