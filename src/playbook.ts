@@ -223,7 +223,7 @@ export function deprecateBullet(
 ): boolean {
   const bullet = findBullet(playbook, id);
   if (!bullet) return false;
-  
+
   bullet.deprecated = true;
   bullet.deprecatedAt = now();
   bullet.deprecationReason = reason;
@@ -231,8 +231,115 @@ export function deprecateBullet(
   bullet.state = "retired";
   bullet.maturity = "deprecated";
   bullet.updatedAt = now();
-  
+
   return true;
+}
+
+// --- Pinning (Auto-Prune Protection) ---
+
+/**
+ * Pin a bullet to protect it from auto-pruning.
+ *
+ * Pinned bullets are NEVER automatically deprecated, even if they
+ * accumulate harmful feedback. Use this for:
+ * - Critical organizational rules
+ * - Regulatory/compliance requirements
+ * - Proven valuable rules that should be preserved
+ *
+ * @param playbook - The playbook containing the bullet
+ * @param bulletId - ID of the bullet to pin
+ * @param reason - Explanation for why this bullet is pinned (required for audit trail)
+ * @returns true if bullet was pinned, false if not found
+ * @throws Error if bulletId is not found in playbook
+ *
+ * @example
+ * pinBullet(playbook, "b-abc123", "Core security requirement per audit #2024-11");
+ */
+export function pinBullet(
+  playbook: Playbook,
+  bulletId: string,
+  reason: string
+): boolean {
+  const bullet = findBullet(playbook, bulletId);
+  if (!bullet) {
+    throw new Error(`Bullet not found: ${bulletId}`);
+  }
+
+  bullet.pinned = true;
+  bullet.pinnedReason = reason;
+  bullet.updatedAt = now();
+
+  log(`Pinned bullet ${bulletId}: "${reason}"`, true);
+  return true;
+}
+
+/**
+ * Unpin a bullet, allowing it to be auto-pruned if it meets prune criteria.
+ *
+ * @param playbook - The playbook containing the bullet
+ * @param bulletId - ID of the bullet to unpin
+ * @returns true if bullet was unpinned, false if not found
+ * @throws Error if bulletId is not found in playbook
+ *
+ * @example
+ * unpinBullet(playbook, "b-abc123");
+ */
+export function unpinBullet(
+  playbook: Playbook,
+  bulletId: string
+): boolean {
+  const bullet = findBullet(playbook, bulletId);
+  if (!bullet) {
+    throw new Error(`Bullet not found: ${bulletId}`);
+  }
+
+  const wasPinned = bullet.pinned;
+  bullet.pinned = false;
+  bullet.pinnedReason = undefined;
+  bullet.updatedAt = now();
+
+  if (wasPinned) {
+    log(`Unpinned bullet ${bulletId}`, true);
+  }
+  return true;
+}
+
+/**
+ * Check if a bullet should be auto-pruned.
+ *
+ * This function checks pinned status FIRST, before any other criteria.
+ * Pinned bullets are NEVER auto-pruned regardless of harmful feedback.
+ *
+ * @param bullet - The bullet to check
+ * @param config - Configuration with prune thresholds
+ * @returns true if bullet should be pruned, false if protected or not meeting criteria
+ */
+export function shouldAutoPrune(
+  bullet: PlaybookBullet,
+  config: { harmfulPruneThreshold?: number } = {}
+): boolean {
+  // Pinned bullets are NEVER auto-pruned
+  if (bullet.pinned) {
+    return false;
+  }
+
+  // Already deprecated/retired - no need to prune
+  if (bullet.deprecated || bullet.state === "retired") {
+    return false;
+  }
+
+  // Check harmful threshold (default: 3 harmful with ratio > 0.5)
+  const harmfulThreshold = config.harmfulPruneThreshold ?? 3;
+  const ratio = bullet.helpfulCount > 0
+    ? bullet.harmfulCount / bullet.helpfulCount
+    : bullet.harmfulCount > 0 ? Infinity : 0;
+
+  // Prune if harmful count exceeds threshold AND harmful ratio is high
+  if (bullet.harmfulCount >= harmfulThreshold && ratio > 0.5) {
+    return true;
+  }
+
+  return false;
 }
 
 export function getActiveBullets(playbook: Playbook): PlaybookBullet[] {
@@ -448,4 +555,128 @@ export function updateBulletCounter(
     timestamp: now(),
     context: "Legacy counter increment (no session context)"
   });
+}
+
+// --- Export Functions ---
+
+/**
+ * Options for markdown export
+ */
+export interface ExportToMarkdownOptions {
+  /** Limit rules per category (default: all) */
+  topN?: number;
+  /** Display helpful count (default: true) */
+  showCounts?: boolean;
+  /** Add PITFALLS section (default: true) */
+  includeAntiPatterns?: boolean;
+  /** Truncate long rule text (default: 200 chars) */
+  maxContentLength?: number;
+}
+
+/**
+ * Generate AGENTS.md format markdown from playbook.
+ *
+ * Creates human-readable rule documentation organized by category,
+ * suitable for inclusion in project AGENTS.md files.
+ *
+ * @param playbook - The playbook to export
+ * @param options - Export configuration options
+ * @returns Formatted markdown string
+ *
+ * @example
+ * const markdown = exportToMarkdown(playbook, { topN: 5, showCounts: true });
+ * await fs.writeFile("AGENTS.md", markdown);
+ */
+export function exportToMarkdown(
+  playbook: Playbook,
+  options: ExportToMarkdownOptions = {}
+): string {
+  const {
+    topN,
+    showCounts = true,
+    includeAntiPatterns = true,
+    maxContentLength = 200
+  } = options;
+
+  const lines: string[] = [];
+  const activeBullets = getActiveBullets(playbook);
+
+  // Count maturity levels
+  const provenCount = activeBullets.filter(b => b.maturity === "proven").length;
+  const establishedCount = activeBullets.filter(b => b.maturity === "established").length;
+  const candidateCount = activeBullets.filter(b => b.maturity === "candidate").length;
+
+  // Header
+  lines.push("## Agent Playbook (auto-generated from cass-memory)");
+  lines.push("");
+  lines.push(`Last updated: ${now()}`);
+  lines.push(`Total rules: ${activeBullets.length} (${provenCount} proven, ${establishedCount} established, ${candidateCount} candidate)`);
+  lines.push("");
+
+  // Separate positive rules from anti-patterns
+  const positiveRules = activeBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
+  const antiPatterns = activeBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
+
+  // Group positive rules by category
+  const byCategory = new Map<string, PlaybookBullet[]>();
+  for (const bullet of positiveRules) {
+    const category = bullet.category || "general";
+    if (!byCategory.has(category)) {
+      byCategory.set(category, []);
+    }
+    byCategory.get(category)!.push(bullet);
+  }
+
+  // Sort categories alphabetically
+  const sortedCategories = Array.from(byCategory.keys()).sort();
+
+  // Generate sections for each category
+  for (const category of sortedCategories) {
+    const bullets = byCategory.get(category)!;
+
+    // Sort by helpful count (descending) within category
+    bullets.sort((a, b) => (b.helpfulCount || 0) - (a.helpfulCount || 0));
+
+    // Apply topN limit if specified
+    const displayBullets = topN ? bullets.slice(0, topN) : bullets;
+
+    if (displayBullets.length === 0) continue;
+
+    // Category header with count
+    const capitalizedCategory = category.charAt(0).toUpperCase() + category.slice(1);
+    lines.push(`### ${capitalizedCategory} (${bullets.length} rule${bullets.length !== 1 ? "s" : ""})`);
+
+    // List rules
+    displayBullets.forEach((bullet, index) => {
+      const content = bullet.content.length > maxContentLength
+        ? bullet.content.slice(0, maxContentLength - 3) + "..."
+        : bullet.content;
+
+      if (showCounts) {
+        lines.push(`${index + 1}. [${bullet.helpfulCount || 0}× helpful] ${content}`);
+      } else {
+        lines.push(`${index + 1}. ${content}`);
+      }
+    });
+
+    lines.push("");
+  }
+
+  // Anti-patterns section
+  if (includeAntiPatterns && antiPatterns.length > 0) {
+    lines.push("### PITFALLS TO AVOID");
+    for (const bullet of antiPatterns) {
+      const content = bullet.content.length > maxContentLength
+        ? bullet.content.slice(0, maxContentLength - 3) + "..."
+        : bullet.content;
+      lines.push(`- AVOID: ${content}`);
+    }
+    lines.push("");
+  }
+
+  // Footer
+  lines.push("---");
+  lines.push(`*Generated by cass-memory at ${now()}*`);
+
+  return lines.join("\n");
 }

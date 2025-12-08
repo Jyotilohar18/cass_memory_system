@@ -16,21 +16,32 @@ export class ProcessedLog {
 
     try {
       const content = await fs.readFile(this.logPath, "utf-8");
+      // Resilience: Skip empty lines, comments, and malformed lines without crashing
       const lines = content.split("\n").filter(line => line.trim() && !line.startsWith("#"));
       
       for (const line of lines) {
-        const [id, sessionPath, processedAt, deltasProposed, deltasApplied] = line.split("\t");
-        if (sessionPath) {
-          this.entries.set(sessionPath, {
-            sessionPath,
-            processedAt,
-            diaryId: id,
-            deltasGenerated: parseInt(deltasProposed || "0", 10)
-          });
+        try {
+          const parts = line.split("\t");
+          // Basic validation: must have at least sessionPath (index 1)
+          if (parts.length < 2) continue;
+
+          const [id, sessionPath, processedAt, deltasProposed] = parts;
+          if (sessionPath) {
+            this.entries.set(sessionPath, {
+              sessionPath,
+              processedAt: processedAt || new Date().toISOString(),
+              diaryId: id === "-" ? undefined : id,
+              deltasGenerated: parseInt(deltasProposed || "0", 10)
+            });
+          }
+        } catch {
+          // Ignore individual malformed lines to prevent total failure
+          continue;
         }
       }
     } catch (error) {
       console.error(`Failed to load processed log: ${error}`);
+      // Don't rethrow - treat as empty log to fail open (safe in this context, means re-processing)
     }
   }
 
@@ -44,7 +55,15 @@ export class ProcessedLog {
       lines.push(`${entry.diaryId || "-"}\t${entry.sessionPath}\t${entry.processedAt}\t${entry.deltasGenerated}\t0`);
     }
     
-    await fs.writeFile(this.logPath, lines.join("\n"), "utf-8");
+    // Use atomic write pattern manually here since tracking logic is self-contained
+    const tempPath = `${this.logPath}.tmp`;
+    try {
+        await fs.writeFile(tempPath, lines.join("\n"), "utf-8");
+        await fs.rename(tempPath, this.logPath);
+    } catch (error) {
+        try { await fs.unlink(tempPath); } catch {}
+        throw error;
+    }
   }
 
   has(sessionPath: string): boolean {
