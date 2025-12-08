@@ -62,18 +62,19 @@ export async function reflectCommand(
 
     console.log(chalk.blue(`Found ${unprocessed.length} sessions to process.`));
 
-    let allDeltas: PlaybookDelta[] = [];
-
-    for (const sessionPath of unprocessed) {
+    const allDeltas: PlaybookDelta[] = [];
+    const CONCURRENCY = 3;
+    
+    // Helper for processing a single session
+    const processSession = async (sessionPath: string) => {
       console.log(chalk.dim(`Processing ${sessionPath}...`));
-      
       try {
         const diary = await generateDiary(sessionPath, config);
         const content = await cassExport(sessionPath, "text", config.cassPath) || "";
         
         if (content.length < 50) {
           warn(`Skipping empty session: ${sessionPath}`);
-          continue;
+          return;
         }
 
         const deltas = await reflectOnSession(diary, initialPlaybook, config);
@@ -88,7 +89,9 @@ export async function reflectCommand(
           }
         }
 
-        allDeltas.push(...validatedDeltas);
+        if (validatedDeltas.length > 0) {
+          allDeltas.push(...validatedDeltas);
+        }
         
         processedLog.add({
           sessionPath,
@@ -100,6 +103,12 @@ export async function reflectCommand(
       } catch (err: any) {
         error(`Failed to process ${sessionPath}: ${err.message}`);
       }
+    };
+
+    // Process in batches
+    for (let i = 0; i < unprocessed.length; i += CONCURRENCY) {
+      const batch = unprocessed.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(processSession));
     }
 
     if (options.dryRun) {
