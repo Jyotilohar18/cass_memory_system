@@ -128,7 +128,7 @@ async function isSemanticallyToxic(content: string, toxicLog: ToxicEntry[]): Pro
     
     // Semantic match (Jaccard for V1)
     if (jaccardSimilarity(content, entry.content) > 0.85) {
-      log(`Blocked toxic content: "${content.slice(0, 50)}"..." matches blocked "${entry.content.slice(0, 50)}"..."`, true);
+      log(`Blocked toxic content: "${content.slice(0, 50)}..." matches blocked "${entry.content.slice(0, 50)}..."`, true);
       return true;
     }
   }
