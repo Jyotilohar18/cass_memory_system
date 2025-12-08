@@ -5,9 +5,27 @@ import {
   ValidationResult,
   ValidationEvidence
 } from "./types.js";
-import { runValidator } from "./llm.js";
+import { runValidator, ValidatorResult } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
 import { extractKeywords, log } from "./utils.js";
+
+// --- Verdict Normalization ---
+
+/**
+ * Normalize LLM validator result to our internal verdict types.
+ * Maps REFINE to ACCEPT_WITH_CAUTION with reduced confidence.
+ */
+export function normalizeValidatorVerdict(result: ValidatorResult): ValidatorResult {
+  if (result.verdict === "REFINE") {
+    return {
+      ...result,
+      verdict: "ACCEPT_WITH_CAUTION",
+      valid: true,
+      confidence: result.confidence * 0.8 // Reduce confidence for refined rules
+    };
+  }
+  return result;
+}
 
 // --- Pre-LLM Gate ---
 

@@ -2,7 +2,9 @@ import { execFile, spawn, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { 
   CassHit, 
-  CassHitSchema 
+  CassHitSchema,
+  CassTimelineGroup,
+  CassTimelineResult
 } from "./types.js";
 import { log, error } from "./utils.js";
 
@@ -196,22 +198,6 @@ export async function cassStats(cassPath = "cass"): Promise<any | null> {
   } catch {
     return null;
   }
-}
-
-// Added types locally if not in types.ts
-export interface CassTimelineGroup {
-  date: string;
-  sessions: Array<{
-    path: string;
-    agent: string;
-    messageCount: number;
-    startTime: string;
-    endTime: string;
-  }>;
-}
-
-export interface CassTimelineResult {
-  groups: CassTimelineGroup[];
 }
 
 export async function cassTimeline(
