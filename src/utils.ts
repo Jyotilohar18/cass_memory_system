@@ -2205,3 +2205,150 @@ function formatDateShort(isoDate: string): string {
     return "unknown date";
   }
 }
+
+// --- Graceful Shutdown ---
+
+/** Global flag to track if shutdown has been initiated */
+let shutdownInProgress = false;
+
+/** Custom cleanup handlers registered via onShutdown */
+const shutdownHandlers: Array<() => void | Promise<void>> = [];
+
+/**
+ * Check if shutdown is currently in progress.
+ * Useful for operations to abort early during shutdown.
+ */
+export function isShutdownInProgress(): boolean {
+  return shutdownInProgress;
+}
+
+/**
+ * Register a cleanup handler to be called during graceful shutdown.
+ * Handlers are called in registration order.
+ *
+ * @param handler - Cleanup function (can be async)
+ * @returns Function to unregister the handler
+ *
+ * @example
+ * const unregister = onShutdown(() => {
+ *   console.log("Cleaning up...");
+ * });
+ * // Later: unregister();
+ */
+export function onShutdown(handler: () => void | Promise<void>): () => void {
+  shutdownHandlers.push(handler);
+  return () => {
+    const index = shutdownHandlers.indexOf(handler);
+    if (index >= 0) shutdownHandlers.splice(index, 1);
+  };
+}
+
+/**
+ * Perform graceful shutdown cleanup.
+ * This is called by signal handlers but can also be called directly.
+ *
+ * @param signal - The signal or reason for shutdown
+ * @param exitCode - Exit code to use (default: 0)
+ */
+export async function performShutdown(
+  signal: string,
+  exitCode: number = 0
+): Promise<void> {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+
+  const logPrefix = "[cass-memory]";
+
+  try {
+    // 1. Release all acquired locks
+    const { releaseAllLocks, getActiveLocks } = await import("./lock.js");
+    const lockCount = getActiveLocks().length;
+    if (lockCount > 0) {
+      const released = await releaseAllLocks();
+      if (released > 0) {
+        console.error(`${logPrefix} Released ${released} lock(s) during shutdown`);
+      }
+    }
+
+    // 2. Run custom shutdown handlers
+    for (const handler of shutdownHandlers) {
+      try {
+        await handler();
+      } catch (err) {
+        // Best effort - continue with other handlers
+        console.error(`${logPrefix} Shutdown handler error:`, err);
+      }
+    }
+
+    // 3. Log shutdown event
+    if (signal === "SIGINT") {
+      console.error(`\n${logPrefix} Operation cancelled by user`);
+    } else if (signal === "SIGTERM") {
+      console.error(`${logPrefix} Received termination signal`);
+    } else {
+      console.error(`${logPrefix} Shutting down: ${signal}`);
+    }
+  } catch (err) {
+    console.error(`${logPrefix} Error during shutdown:`, err);
+  }
+
+  // Exit with appropriate code
+  // SIGINT: 128 + 2 = 130 (Unix convention)
+  // SIGTERM: 128 + 15 = 143 (Unix convention)
+  const finalCode =
+    exitCode !== 0
+      ? exitCode
+      : signal === "SIGINT"
+        ? 130
+        : signal === "SIGTERM"
+          ? 143
+          : 0;
+
+  process.exit(finalCode);
+}
+
+/** Track if handlers are already registered */
+let handlersRegistered = false;
+
+/**
+ * Register signal handlers for graceful shutdown.
+ * Handles SIGINT (Ctrl+C) and SIGTERM (system termination).
+ *
+ * This function is idempotent - calling it multiple times has no effect.
+ *
+ * @example
+ * // At application startup
+ * setupGracefulShutdown();
+ *
+ * // Now Ctrl+C will:
+ * // 1. Release all acquired locks
+ * // 2. Run registered cleanup handlers
+ * // 3. Log shutdown message
+ * // 4. Exit with code 130
+ */
+export function setupGracefulShutdown(): void {
+  if (handlersRegistered) return;
+  handlersRegistered = true;
+
+  // Handle Ctrl+C
+  process.on("SIGINT", () => {
+    void performShutdown("SIGINT", 130);
+  });
+
+  // Handle termination signal (e.g., kill, system shutdown)
+  process.on("SIGTERM", () => {
+    void performShutdown("SIGTERM", 143);
+  });
+
+  // Handle uncaught exceptions gracefully
+  process.on("uncaughtException", (err) => {
+    console.error("[cass-memory] Uncaught exception:", err);
+    void performShutdown("uncaughtException", 1);
+  });
+
+  // Handle unhandled promise rejections
+  process.on("unhandledRejection", (reason) => {
+    console.error("[cass-memory] Unhandled rejection:", reason);
+    void performShutdown("unhandledRejection", 1);
+  });
+}

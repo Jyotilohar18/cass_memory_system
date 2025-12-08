@@ -5,6 +5,39 @@ import { expandPath } from "./utils.js";
 const STALE_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
 
 /**
+ * Global set of currently held lock paths.
+ * Used for cleanup during graceful shutdown.
+ */
+const activeLocks = new Set<string>();
+
+/**
+ * Get a copy of currently active lock paths.
+ * Useful for debugging and shutdown cleanup.
+ */
+export function getActiveLocks(): string[] {
+  return [...activeLocks];
+}
+
+/**
+ * Release all currently held locks.
+ * Called during graceful shutdown to prevent orphaned locks.
+ * @returns Number of locks released
+ */
+export async function releaseAllLocks(): Promise<number> {
+  let released = 0;
+  for (const lockPath of activeLocks) {
+    try {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      released++;
+    } catch {
+      // Best effort - continue with other locks
+    }
+  }
+  activeLocks.clear();
+  return released;
+}
+
+/**
  * Check if a lock dir is stale (older than threshold).
  */
 async function isLockStale(lockPath: string): Promise<boolean> {
@@ -52,7 +85,10 @@ export async function withLock<T>(
     try {
       // mkdir is atomic
       await fs.mkdir(lockPath);
-      
+
+      // Track this lock for graceful shutdown cleanup
+      activeLocks.add(lockPath);
+
       // Write metadata inside (best effort, doesn't affect lock validity)
       try {
         await fs.writeFile(`${lockPath}/pid`, pid);
@@ -61,6 +97,8 @@ export async function withLock<T>(
       try {
         return await operation();
       } finally {
+        // Remove from tracking before releasing
+        activeLocks.delete(lockPath);
         try {
           await fs.rm(lockPath, { recursive: true, force: true });
         } catch {}

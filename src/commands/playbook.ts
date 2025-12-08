@@ -2,15 +2,164 @@ import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets } from "../playbook.js";
 import { error as logError } from "../utils.js";
 import { withLock } from "../lock.js";
+import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
+import { PlaybookBullet } from "../types.js";
 import chalk from "chalk";
 
+// Helper function to format a bullet for detailed display
+function formatBulletDetails(bullet: PlaybookBullet, effectiveScore: number, decayedCounts: { decayedHelpful: number; decayedHarmful: number }): string {
+  const lines: string[] = [];
+
+  lines.push(chalk.bold(`BULLET: ${bullet.id}`));
+  lines.push("");
+  lines.push(`Content: ${bullet.content}`);
+  lines.push(`Category: ${chalk.cyan(bullet.category)}`);
+  lines.push(`Kind: ${bullet.kind}`);
+  lines.push(`Maturity: ${chalk.yellow(bullet.maturity)}`);
+  lines.push(`Scope: ${bullet.scope}`);
+
+  lines.push("");
+  lines.push(chalk.bold("Scores:"));
+
+  const rawScore = bullet.helpfulCount - bullet.harmfulCount * 4;
+  lines.push(`  Raw score: ${rawScore}`);
+  lines.push(`  Effective score: ${effectiveScore.toFixed(2)} (with decay)`);
+  lines.push(`  Decayed helpful: ${decayedCounts.decayedHelpful.toFixed(2)}`);
+  lines.push(`  Decayed harmful: ${decayedCounts.decayedHarmful.toFixed(2)}`);
+  lines.push(`  Positive feedback: ${bullet.helpfulCount}`);
+  lines.push(`  Negative feedback: ${bullet.harmfulCount}`);
+
+  lines.push("");
+  lines.push(chalk.bold("History:"));
+  lines.push(`  Created: ${bullet.createdAt}`);
+  lines.push(`  Last updated: ${bullet.updatedAt}`);
+
+  const ageMs = Date.now() - new Date(bullet.createdAt).getTime();
+  const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+  lines.push(`  Age: ${ageDays} days`);
+
+  if (bullet.sourceSessions && bullet.sourceSessions.length > 0) {
+    lines.push("");
+    lines.push(chalk.bold("Source sessions:"));
+    for (const session of bullet.sourceSessions.slice(0, 5)) {
+      lines.push(`  - ${session}`);
+    }
+    if (bullet.sourceSessions.length > 5) {
+      lines.push(`  ... and ${bullet.sourceSessions.length - 5} more`);
+    }
+  }
+
+  if (bullet.sourceAgents && bullet.sourceAgents.length > 0) {
+    lines.push("");
+    lines.push(chalk.bold("Source agents:"));
+    lines.push(`  ${bullet.sourceAgents.join(", ")}`);
+  }
+
+  if (bullet.tags && bullet.tags.length > 0) {
+    lines.push("");
+    lines.push(`Tags: [${bullet.tags.join(", ")}]`);
+  }
+
+  if (bullet.deprecated) {
+    lines.push("");
+    lines.push(chalk.red.bold("Status: DEPRECATED"));
+    if (bullet.deprecationReason) {
+      lines.push(`Reason: ${bullet.deprecationReason}`);
+    }
+    if (bullet.deprecatedAt) {
+      lines.push(`Deprecated at: ${bullet.deprecatedAt}`);
+    }
+  }
+
+  if (bullet.pinned) {
+    lines.push("");
+    lines.push(chalk.blue.bold("📌 PINNED"));
+  }
+
+  return lines.join("\n");
+}
+
+// Find similar bullet IDs for suggestions
+function findSimilarIds(bullets: PlaybookBullet[], targetId: string, maxSuggestions = 3): string[] {
+  const similar: Array<{ id: string; score: number }> = [];
+  const targetLower = targetId.toLowerCase();
+
+  for (const bullet of bullets) {
+    const idLower = bullet.id.toLowerCase();
+    // Simple substring match
+    if (idLower.includes(targetLower) || targetLower.includes(idLower)) {
+      similar.push({ id: bullet.id, score: 2 });
+    } else if (idLower.startsWith(targetLower.slice(0, 3))) {
+      // Prefix match
+      similar.push({ id: bullet.id, score: 1 });
+    }
+  }
+
+  return similar
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxSuggestions)
+    .map(s => s.id);
+}
+
 export async function playbookCommand(
-  action: "list" | "add" | "remove",
+  action: "list" | "add" | "remove" | "get",
   args: string[],
   flags: { category?: string; json?: boolean; hard?: boolean; reason?: string }
 ) {
   const config = await loadConfig();
-  
+
+  if (action === "get") {
+    const id = args[0];
+    if (!id) {
+      logError("Bullet ID required for get");
+      process.exit(1);
+    }
+
+    const playbook = await loadMergedPlaybook(config);
+    const bullet = findBullet(playbook, id);
+
+    if (!bullet) {
+      const allBullets = playbook.bullets || [];
+      const similar = findSimilarIds(allBullets, id);
+
+      if (flags.json) {
+        console.log(JSON.stringify({
+          success: false,
+          error: `Bullet '${id}' not found`,
+          suggestions: similar.length > 0 ? similar : undefined
+        }, null, 2));
+      } else {
+        logError(`Bullet '${id}' not found`);
+        if (similar.length > 0) {
+          console.log(chalk.yellow(`Did you mean: ${similar.join(", ")}?`));
+        }
+      }
+      process.exit(1);
+    }
+
+    const effectiveScore = getEffectiveScore(bullet, config);
+    const decayedCounts = getDecayedCounts(bullet, config);
+
+    if (flags.json) {
+      const ageMs = Date.now() - new Date(bullet.createdAt).getTime();
+      const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+
+      console.log(JSON.stringify({
+        success: true,
+        bullet: {
+          ...bullet,
+          effectiveScore,
+          decayedHelpful: decayedCounts.decayedHelpful,
+          decayedHarmful: decayedCounts.decayedHarmful,
+          ageDays
+        }
+      }, null, 2));
+    } else {
+      console.log(formatBulletDetails(bullet, effectiveScore, decayedCounts));
+    }
+    return;
+  }
+
   if (action === "list") {
     const playbook = await loadMergedPlaybook(config);
     let bullets = getActiveBullets(playbook);

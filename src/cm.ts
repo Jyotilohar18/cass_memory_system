@@ -79,6 +79,12 @@ playbook.command("remove")
   .option("--json", "Output JSON")
   .action(async (id: string, opts: any) => await playbookCommand("remove", [id], opts));
 
+playbook.command("get")
+  .description("Get detailed info for a single rule")
+  .argument("<id>", "Rule ID")
+  .option("--json", "Output JSON")
+  .action(async (id: string, opts: any) => await playbookCommand("get", [id], opts));
+
 // --- Stats ---
 program.command("stats")
   .description("Show playbook health metrics")
