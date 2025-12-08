@@ -16,6 +16,7 @@ import { outcomeCommand, applyOutcomeLogCommand } from "./commands/outcome.js";
 import { usageCommand } from "./commands/usage.js";
 import { startersCommand } from "./commands/starters.js";
 import { quickstartCommand } from "./commands/quickstart.js";
+import { topCommand } from "./commands/top.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -109,6 +110,15 @@ program.command("stats")
   .description("Show playbook health metrics")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await statsCommand(opts));
+
+// --- Top ---
+program.command("top")
+  .description("Show most effective playbook bullets")
+  .argument("[count]", "Number of bullets to show", toInt, 10)
+  .option("--scope <scope>", "Filter by scope (global, workspace, all)")
+  .option("--category <cat>", "Filter by category")
+  .option("--json", "Output JSON")
+  .action(async (count: number, opts: any) => await topCommand(count, opts));
 
 // --- Usage ---
 program.command("usage")
