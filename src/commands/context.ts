@@ -404,7 +404,9 @@ export async function contextCommand(
 ) {
   const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(task, flags);
 
-  if (flags.json) {
+  const wantsJson = flags.format === "json" || flags.json;
+
+  if (wantsJson) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     // Human Output

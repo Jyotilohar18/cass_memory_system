@@ -32,7 +32,9 @@ export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = 
 
   // Database URLs with credentials
   // Fixed: ReDoS prevention
-  { pattern: /(postgres|mysql|mongodb|redis):\/\/([a-zA-Z0-9_]+):([a-zA-Z0-9_%\-.~]+)@/gi, replacement: "$1://[USER]:[PASS]@" }
+  // Matches protocol://user:pass@host
+  // Supports standard URI characters in password
+  { pattern: /(postgres|mysql|mongodb|redis):\/\/([a-zA-Z0-9_]+):([a-zA-Z0-9_%\-.~!$&'()*+,;=]+)@/gi, replacement: "$1://[USER]:[PASS]@" }
 ];
 
 export function sanitize(
