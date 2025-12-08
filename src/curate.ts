@@ -71,8 +71,15 @@ export function detectConflicts(
     if (b.deprecated) continue;
 
     const overlap = jaccardSimilarity(newContent, b.content);
-    // Optimization: Check overlap first before regex
-    if (overlap < 0.25) continue;
+    
+    // Check markers efficiently if overlap is borderline
+    const markersInNew = hasMarker(newContent, [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS]);
+    const markersInOld = hasMarker(b.content, [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS]);
+    
+    // Optimization: Check overlap first. 
+    // We allow overlap >= 0.2 if markers are present, otherwise require 0.25
+    if (overlap < 0.2) continue;
+    if (overlap < 0.25 && (!markersInNew && !markersInOld)) continue;
 
     const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
     const oldNeg = hasMarker(b.content, NEGATIVE_MARKERS);

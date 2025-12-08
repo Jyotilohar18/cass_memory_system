@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { loadConfig, getSanitizeConfig } from "../config.js";
+import { sanitize } from "../sanitize.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { safeCassSearch } from "../cass.js";
 import {
@@ -12,7 +13,8 @@ import {
   truncate,
   formatLastHelpful,
   extractBulletReasoning,
-  ensureDir
+  ensureDir,
+  expandPath
 } from "../utils.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit } from "../types.js";
@@ -193,6 +195,11 @@ export async function generateContextResult(
   return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
 }
 
+import { loadConfig, getSanitizeConfig } from "../config.js";
+import { sanitize } from "../sanitize.js";
+
+// ... existing imports ...
+
 async function appendContextLog(entry: {
   task: string;
   ruleIds: string[];
@@ -201,6 +208,7 @@ async function appendContextLog(entry: {
   session?: string;
 }) {
   try {
+    // Resolve log path: prefer repo-local .cass/ if available
     const repoLog = path.resolve(".cass", "context-log.jsonl");
     const repoDirExists = await fs
       .access(path.dirname(repoLog))
@@ -209,14 +217,23 @@ async function appendContextLog(entry: {
 
     const logPath = repoDirExists
       ? repoLog
-      : path.resolve(process.env.HOME || "~", ".cass-memory", "context-log.jsonl");
+      : expandPath("~/.cass-memory/context-log.jsonl");
 
     await ensureDir(path.dirname(logPath));
+
+    // Sanitize content before logging
+    const config = await loadConfig();
+    const sanitizeConfig = getSanitizeConfig(config);
+    const safeTask = sanitize(entry.task, sanitizeConfig);
+
     const payload = {
       ...entry,
+      task: safeTask,
       timestamp: new Date().toISOString(),
       source: "context",
     };
+    
+    // Simple append is sufficient for logs
     await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
   } catch {
     // Best-effort logging; never block context generation
