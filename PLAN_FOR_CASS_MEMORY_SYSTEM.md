@@ -2177,6 +2177,28 @@ server.setRequestHandler("tools/call", async (request) => {
 });
 ```
 
+#### MCP Server Architecture (design)
+
+- Transport: HTTP-only MCP (no stdio/SSE). Use official MCP HTTP server (fastmcp-compatible) and keep a single entrypoint `src/mcp/server.ts`.
+- Bootstrap: load config once, warm playbook/cass availability checks, share a logger, and expose graceful shutdown.
+- Tools (V1 surface):
+  - `cm_context` → wraps existing context pipeline (`contextCommand` internals) with options `{ task, top?, history?, days?, workspace? }`, returns the JSON context result.
+  - `cm_mark` → wraps mark flow, input `{ bulletId, helpful, reason?, session? }`, returns updated bullet info or ack.
+  - `cm_outcome` → lightweight session outcome hook `{ sessionId, outcome: "success"|"failure"|"partial", rulesUsed?: string[] }`; stores via tracking/diary hook (no LLM), returns ack.
+- Resources:
+  - `cm://playbook` → merged playbook snapshot (filtered to active bullets).
+  - `cm://diary` → recent diary entries (bounded list, sanitized).
+  - (Optional) `cm://health` → doctor-style health summary (cass availability, storage, sanitization warnings).
+- Error/health:
+  - Map known errors to MCP errors with codes (config invalid, cass unavailable, playbook missing); include remediation hints.
+  - Degraded mode when cass unavailable: reuse `contextWithoutCass`.
+- Concurrency/perf:
+  - Cache config/playbook per process with invalidation hooks (fs mtime check on each request) to avoid stale data.
+  - Timeouts per tool; trim snippets with existing truncate helper.
+- Logging: use existing logger utilities; structured fields include `tool`, `agent`, `requestId`, `task`.
+- Build/CLI: add `cass-memory serve` (bun build target) that starts the MCP HTTP server on configurable host/port/path; keep CLI entrypoints intact.
+- Tests: one unit per handler (context/mark/outcome) using in-memory fixtures; one HTTP integration test that exercises tools/list + tools/call roundtrip with a temporary playbook/diary.
+
 ---
 
 ## Implementation Roadmap (Priority-Based)
@@ -5572,6 +5594,73 @@ bullets:
 - Command surface: DONE per nf0v
 - Binaries: TODO (iqat open)
 - Dev docs: TODO (4hey open)
+
+---
+
+## Testing Gap Analysis (cass_memory_system-f63a)
+
+**Purpose:** Identify remaining gaps for unit tests without mocks, so we can prioritize coverage that unblocks integration/e2e epics.
+
+### Scope
+- Target pure functions in `scoring.ts`, `playbook.ts`, `config.ts`, `utils.ts`, `types.ts`, `security.ts`, `tracking.ts`, `lock.ts`.
+- Real file I/O permitted via temp dirs; no mocking of internal modules. Only mock external LLM/network when unavoidable.
+- Aligns with epics: u64s (unit tests), 8dxr (integration tests), q3h2/m7np (full coverage).
+
+### Gaps (draft)
+- **scoring.ts**: Decay edge cases (future timestamps, negative half-life guard), maturity transitions with mixed feedback ratios.
+- **playbook.ts**: Toxic-blocklist pruning and semantic duplicate detection; pinning behavior; shouldAutoPrune thresholds.
+- **config.ts**: Cascading merges with nested overrides; budget defaults; sanitization overrides.
+- **utils.ts**: resolveRepoDir in non-git dirs; generateSuggestedQueries edge cases (no keywords); formatLastHelpful with malformed timestamps.
+- **security.ts**: Secret patterns coverage for less-common tokens; ensure auditLog flag behavior.
+- **tracking.ts/lock.ts**: Concurrent lock attempts and stale lock cleanup on temp fs.
+
+### Deliverables
+- Checklist of concrete test cases per module (to be turned into bun tests).
+- Minimal helpers/factories list (temp dir factory, bullet factory) to avoid mocking.
+- Mapping of which gaps block which epics/tasks (u64s, 8dxr, q3h2, m7np).
+
+### Next steps
+1) Draft per-module case list (living in this plan) and sync with test owners.
+2) Land helper/factory stubs in `test/helpers/` once reservations clear.
+3) Implement highest-impact unit tests first: scoring → playbook → config → utils.
+
+### Per-module test cases (draft)
+- **scoring.ts**
+  - calculateDecayedValue: today ≈1.0; 90d half-life ≈0.5 at 90d; future timestamp >1 guard; negative/zero half-life handled safely.
+  - getEffectiveScore: harmful multiplier applied; maturity multipliers (candidate 0.5x, established 1x, proven 1.5x, deprecated 0x).
+  - checkForPromotion/Demotion: promotion with 3+ feedback; demotion when score negative; auto-deprecate when score < -pruneHarmfulThreshold; pinned bullet not demoted.
+  - isStale: no feedback uses createdAt; malformed timestamp handled gracefully.
+- **playbook.ts**
+  - isSemanticallyToxic filters bullets using Jaccard >0.85 and exact hash.
+  - shouldAutoPrune respects pinned bullets and harmful ratio thresholds.
+  - findSimilarBullet returns highest-similarity bullet; ignores deprecated/retired.
+  - addBullet extracts agent from session path; sets timestamps; confidence half-life override.
+- **config.ts**
+  - loadConfig merges global+repo+CLI; budget defaults present; sanitization merge order.
+  - detectRepoContext returns inRepo=false outside git.
+  - normalizeConfigKeys converts snake_case to camelCase on nested keys.
+  - getSanitizeConfig falls back to defaults when partial config provided.
+- **utils.ts**
+  - resolveRepoDir returns null outside git; expandPath handles ~ and relative.
+  - generateSuggestedQueries when no keywords returns empty; when keywords present returns unique suggestions with days/agent filters.
+  - formatLastHelpful tolerates invalid timestamps; prefers helpfulEvents over feedbackEvents.
+  - checkDeprecatedPatterns matches regex-style and plain patterns once per warning.
+- **security.ts**
+  - sanitizeContent removes AWS keys, bearer tokens, PATs, DB URLs, private keys; extraPatterns honored; auditLog flag gated.
+  - ensureSanitizedDiary prevents secrets in diary saving.
+- **tracking.ts / lock.ts**
+  - withLock handles concurrent access (second caller waits/fails gracefully).
+  - Stale lock detection deletes expired lock file.
+  - Tracking processedSessions persists and reloads; corrupted state recovers to empty.
+
+### Helper/factory stubs to land (TBD once test/** free)
+- `test/helpers/temp.ts`: `withTempDir(name, fn)` using mkdtemp + recursive cleanup; yields paths for repo/global dirs.
+- `test/helpers/factories.ts`:
+  - `makeBullet(opts)` with defaults (candidate, no feedback).
+  - `makeFeedback({type, daysAgo, reason})` to generate timestamped events.
+  - `makeConfig(overrides)` seeded from DEFAULT_CONFIG with budget/sanitization defaults.
+- `test/helpers/fixtures.ts`: loaders for sample playbook/diary YAML/JSON in-memory (no network).
+- `test/helpers/logger.ts`: noop logger with opt-in debug piping to console for flaky-case debugging (guarded by env).
 
 ---
 

@@ -1,70 +1,61 @@
 import { describe, it, expect } from "bun:test";
 import { curatePlaybook } from "../src/curate";
-import { Playbook } from "../src/types";
-
-const nowIso = () => new Date().toISOString();
-
-function makePlaybookWithHarmfulRule(): Playbook {
-  return {
-    schema_version: 2,
-    name: "test",
-    description: "",
-    metadata: { createdAt: nowIso(), totalReflections: 0, totalSessionsProcessed: 0 },
-    deprecatedPatterns: [],
-    bullets: [
-      {
-        id: "b1",
-        scope: "global",
-        category: "testing",
-        content: "Do the harmful thing",
-        type: "rule",
-        isNegative: false,
-        kind: "workflow_rule",
-        state: "active",
-        maturity: "candidate",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-        sourceSessions: ["s1"],
-        sourceAgents: ["agent"],
-        helpfulCount: 0,
-        harmfulCount: 3,
-        feedbackEvents: [
-          { type: "harmful", timestamp: nowIso(), sessionPath: "s1" },
-          { type: "harmful", timestamp: nowIso(), sessionPath: "s1" },
-          { type: "harmful", timestamp: nowIso(), sessionPath: "s1" },
-          { type: "harmful", timestamp: nowIso(), sessionPath: "s1" },
-          { type: "harmful", timestamp: nowIso(), sessionPath: "s1" }
-        ],
-        helpfulEvents: [],
-        harmfulEvents: [],
-        confidenceDecayHalfLifeDays: 90,
-        deprecated: false,
-        pinned: false,
-        tags: []
-      }
-    ]
-  };
-}
+import { Playbook, PlaybookBullet, Config, ConfigSchema } from "../src/types";
 
 describe("curatePlaybook decay handling", () => {
   it("applies configured decay half-life to inverted anti-patterns", () => {
-    const playbook = makePlaybookWithHarmfulRule();
-    const config = {
-      defaultDecayHalfLife: 90,
-      scoring: {
-        decayHalfLifeDays: 42,
-        harmfulMultiplier: 4,
-        minFeedbackForActive: 3,
-        minHelpfulForProven: 10,
-        maxHarmfulRatioForProven: 0.1
+    const playbook: Playbook = {
+      schema_version: 2,
+      name: "test",
+      description: "test",
+      metadata: {
+        createdAt: new Date().toISOString(),
+        totalReflections: 0,
+        totalSessionsProcessed: 0
       },
-      pruneHarmfulThreshold: 999
-    } as any;
+      deprecatedPatterns: [],
+      bullets: [
+        {
+          id: "b1",
+          content: "Use var instead of const",
+          category: "style",
+          type: "rule",
+          kind: "stack_pattern",
+          scope: "global",
+          state: "active",
+          maturity: "candidate",
+          isNegative: false,
+          helpfulCount: 0,
+          harmfulCount: 5, // Trigger inversion (>3 harmful and >2x helpful)
+          feedbackEvents: [
+            { type: "harmful", timestamp: new Date().toISOString() },
+            { type: "harmful", timestamp: new Date().toISOString() },
+            { type: "harmful", timestamp: new Date().toISOString() },
+            { type: "harmful", timestamp: new Date().toISOString() },
+            { type: "harmful", timestamp: new Date().toISOString() }
+          ],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          confidenceDecayHalfLifeDays: 30,
+          sourceSessions: [],
+          sourceAgents: [],
+          tags: [],
+          pinned: false,
+          deprecated: false
+        }
+      ]
+    };
+
+    const config: Config = ConfigSchema.parse({
+        scoring: { decayHalfLifeDays: 45 },
+        sanitization: { enabled: true, extraPatterns: [] }
+    });
 
     const result = curatePlaybook(playbook, [], config);
     const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
 
     expect(antiPattern).toBeDefined();
-    expect(antiPattern?.confidenceDecayHalfLifeDays).toBe(42);
+    // Should inherit from config (45), not the original bullet (30) or default (90)
+    expect(antiPattern?.confidenceDecayHalfLifeDays).toBe(45);
   });
 });
