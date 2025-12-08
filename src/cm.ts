@@ -12,7 +12,7 @@ import { forgetCommand } from "./commands/forget.js";
 import { auditCommand } from "./commands/audit.js";
 import { projectCommand } from "./commands/project.js";
 import { serveCommand } from "./commands/serve.js";
-import { outcomeCommand } from "./commands/outcome.js";
+import { outcomeCommand, applyOutcomeLogCommand } from "./commands/outcome.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -155,5 +155,13 @@ program.command("outcome")
   .option("--text <text>", "Session notes to auto-detect sentiment")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await outcomeCommand(undefined, opts));
+
+// --- Outcome Apply ---
+program.command("outcome-apply")
+  .description("Apply recorded outcomes to playbook feedback (implicit marks)")
+  .option("--session <id>", "Apply only outcomes for this session id")
+  .option("--limit <n>", "Max outcomes to load (default 50)", toInt)
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await applyOutcomeLogCommand(opts));
 
 program.parse();
