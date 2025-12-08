@@ -13,7 +13,7 @@ import {
   createTestConfig,
   createTestBullet,
   createTestPlaybook,
-  createFeedbackEvent
+  createTestFeedbackEvent
 } from "./helpers/factories";
 
 describe("Curator Pipeline Integration", () => {
