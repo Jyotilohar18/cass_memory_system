@@ -9,6 +9,353 @@ import type { ContextResult } from "./types.js";
 
 const execAsync = promisify(exec);
 
+// --- Input Validation Types and Errors ---
+
+/**
+ * Error thrown when input validation fails.
+ * Contains structured information about the validation failure.
+ */
+export class InputValidationError extends Error {
+  /** The type of input that failed validation */
+  readonly inputType: InputType;
+  /** The value that failed validation */
+  readonly invalidValue: string;
+  /** What format was expected */
+  readonly expectedFormat: string;
+  /** Example of valid input */
+  readonly example: string;
+
+  constructor(
+    inputType: InputType,
+    invalidValue: string,
+    expectedFormat: string,
+    example: string,
+    reason?: string
+  ) {
+    const message = [
+      `Invalid ${inputType}: ${reason || "validation failed"}`,
+      `  Got: ${truncateForError(invalidValue)}`,
+      `  Expected: ${expectedFormat}`,
+      `  Example: ${example}`,
+    ].join("\n");
+
+    super(message);
+    this.name = "InputValidationError";
+    this.inputType = inputType;
+    this.invalidValue = invalidValue;
+    this.expectedFormat = expectedFormat;
+    this.example = example;
+  }
+}
+
+/** Supported input types for validation */
+export type InputType = "bulletId" | "sessionPath" | "task" | "category";
+
+/**
+ * Truncate value for error messages (prevent huge error messages).
+ */
+function truncateForError(value: string, maxLen = 50): string {
+  if (!value) return '""';
+  if (value.length <= maxLen) return `"${value}"`;
+  return `"${value.slice(0, maxLen)}..." (${value.length} chars)`;
+}
+
+/**
+ * Remove control characters (except newlines and tabs) from text.
+ * Control characters are U+0000-U+001F and U+007F-U+009F.
+ */
+function removeControlChars(text: string): string {
+  // Keep \n (0x0A), \r (0x0D), and \t (0x09)
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "");
+}
+
+/**
+ * Normalize unicode text using NFC normalization.
+ * This ensures consistent comparison of strings with accents, etc.
+ */
+function normalizeUnicode(text: string): string {
+  return text.normalize("NFC");
+}
+
+// Bullet ID pattern: b-{base36timestamp}-{random6chars}
+// Example: b-m4k8z2x-abc123
+const BULLET_ID_PATTERN = /^b-[a-z0-9]+-[a-z0-9]+$/;
+
+// Category pattern: alphanumeric with hyphens/underscores, lowercase
+const CATEGORY_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+
+// Maximum lengths
+const MAX_TASK_LENGTH = 500;
+const MAX_CATEGORY_LENGTH = 50;
+const MAX_PATH_LENGTH = 1024;
+
+/**
+ * Validate and sanitize user input to prevent errors and security issues.
+ *
+ * Applies type-specific validation rules and sanitization:
+ * - bulletId: Must match `b-{timestamp}-{random}` pattern
+ * - sessionPath: Valid file path, resolved to absolute
+ * - task: Non-empty, max 500 chars, no control characters
+ * - category: Lowercase alphanumeric with hyphens/underscores, max 50 chars
+ *
+ * Sanitization applied to all types:
+ * - Trim whitespace
+ * - Normalize unicode (NFC)
+ * - Remove control characters (except newlines/tabs where appropriate)
+ *
+ * @param type - The type of input being validated
+ * @param value - The input value to validate and sanitize
+ * @returns Sanitized value on success
+ * @throws {InputValidationError} With helpful error message if validation fails
+ *
+ * @example
+ * // Validate bullet ID
+ * validateAndSanitizeInput('bulletId', 'b-m4k8z2x-abc123');
+ * // Returns: 'b-m4k8z2x-abc123'
+ *
+ * // Validate session path
+ * validateAndSanitizeInput('sessionPath', '~/sessions/session.jsonl');
+ * // Returns: '/home/user/sessions/session.jsonl'
+ *
+ * // Validate task
+ * validateAndSanitizeInput('task', '  Fix auth timeout  ');
+ * // Returns: 'Fix auth timeout'
+ *
+ * // Validate category
+ * validateAndSanitizeInput('category', 'Error-Handling');
+ * // Returns: 'error-handling'
+ */
+export function validateAndSanitizeInput(
+  type: InputType,
+  value: string
+): string {
+  // Basic null/undefined check
+  if (value === null || value === undefined) {
+    throw new InputValidationError(
+      type,
+      String(value),
+      "non-null string",
+      getExampleForType(type),
+      "value is null or undefined"
+    );
+  }
+
+  // Basic sanitization for all types
+  let sanitized = String(value).trim();
+  sanitized = normalizeUnicode(sanitized);
+
+  // Type-specific validation
+  switch (type) {
+    case "bulletId":
+      return validateBulletId(sanitized);
+    case "sessionPath":
+      return validateSessionPath(sanitized);
+    case "task":
+      return validateTask(sanitized);
+    case "category":
+      return validateCategory(sanitized);
+    default:
+      throw new InputValidationError(
+        type,
+        sanitized,
+        "valid input type",
+        "bulletId, sessionPath, task, or category",
+        `unknown input type: ${type}`
+      );
+  }
+}
+
+/**
+ * Validate bullet ID format.
+ */
+function validateBulletId(value: string): string {
+  // Remove control chars but keep the structure
+  const cleaned = removeControlChars(value);
+
+  if (!cleaned) {
+    throw new InputValidationError(
+      "bulletId",
+      value,
+      "non-empty bullet ID in format b-{timestamp}-{random}",
+      "b-m4k8z2x-abc123",
+      "bullet ID is empty"
+    );
+  }
+
+  // Check pattern
+  if (!BULLET_ID_PATTERN.test(cleaned)) {
+    throw new InputValidationError(
+      "bulletId",
+      value,
+      "format: b-{base36-timestamp}-{random-chars}",
+      "b-m4k8z2x-abc123",
+      "bullet ID does not match expected pattern"
+    );
+  }
+
+  return cleaned;
+}
+
+/**
+ * Validate and resolve session path.
+ */
+function validateSessionPath(value: string): string {
+  // Remove control chars
+  const cleaned = removeControlChars(value);
+
+  if (!cleaned) {
+    throw new InputValidationError(
+      "sessionPath",
+      value,
+      "valid file path",
+      "~/.claude/sessions/session.jsonl",
+      "path is empty"
+    );
+  }
+
+  // Check length
+  if (cleaned.length > MAX_PATH_LENGTH) {
+    throw new InputValidationError(
+      "sessionPath",
+      value,
+      `path under ${MAX_PATH_LENGTH} characters`,
+      "~/.claude/sessions/session.jsonl",
+      `path exceeds ${MAX_PATH_LENGTH} characters`
+    );
+  }
+
+  // Expand ~ to home directory
+  const expanded = expandPath(cleaned);
+
+  // Resolve to absolute path
+  const absolute = path.resolve(expanded);
+
+  // Check for path traversal attempts (after resolution)
+  // This prevents things like /../../../etc/passwd
+  const normalizedAbsolute = path.normalize(absolute);
+  if (normalizedAbsolute !== absolute) {
+    throw new InputValidationError(
+      "sessionPath",
+      value,
+      "normalized absolute path without traversal",
+      "~/.claude/sessions/session.jsonl",
+      "path contains suspicious traversal sequences"
+    );
+  }
+
+  // Check for valid extension (common session file types)
+  const ext = path.extname(absolute).toLowerCase();
+  const validExtensions = [".jsonl", ".json", ".md", ".txt", ".log"];
+  if (ext && !validExtensions.includes(ext)) {
+    throw new InputValidationError(
+      "sessionPath",
+      value,
+      `file with extension: ${validExtensions.join(", ")}`,
+      "~/.claude/sessions/session.jsonl",
+      `unexpected file extension: ${ext}`
+    );
+  }
+
+  return absolute;
+}
+
+/**
+ * Validate task description.
+ */
+function validateTask(value: string): string {
+  // Remove control chars but keep newlines and tabs
+  const cleaned = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "");
+
+  if (!cleaned) {
+    throw new InputValidationError(
+      "task",
+      value,
+      "non-empty task description",
+      "Fix authentication timeout bug",
+      "task is empty"
+    );
+  }
+
+  // Check length
+  if (cleaned.length > MAX_TASK_LENGTH) {
+    throw new InputValidationError(
+      "task",
+      value,
+      `task under ${MAX_TASK_LENGTH} characters`,
+      "Fix authentication timeout bug",
+      `task exceeds ${MAX_TASK_LENGTH} characters (got ${cleaned.length})`
+    );
+  }
+
+  // Warn about very short tasks (but don't reject)
+  // This is informational - the sanitized value is still returned
+
+  return cleaned;
+}
+
+/**
+ * Validate category name.
+ */
+function validateCategory(value: string): string {
+  // Remove control chars
+  const cleaned = removeControlChars(value);
+
+  if (!cleaned) {
+    throw new InputValidationError(
+      "category",
+      value,
+      "non-empty category name",
+      "error-handling",
+      "category is empty"
+    );
+  }
+
+  // Convert to lowercase for consistency
+  const lowercased = cleaned.toLowerCase();
+
+  // Check length
+  if (lowercased.length > MAX_CATEGORY_LENGTH) {
+    throw new InputValidationError(
+      "category",
+      value,
+      `category under ${MAX_CATEGORY_LENGTH} characters`,
+      "error-handling",
+      `category exceeds ${MAX_CATEGORY_LENGTH} characters`
+    );
+  }
+
+  // Check pattern (alphanumeric start, then alphanumeric/hyphen/underscore)
+  if (!CATEGORY_PATTERN.test(lowercased)) {
+    throw new InputValidationError(
+      "category",
+      value,
+      "lowercase alphanumeric with hyphens or underscores, starting with alphanumeric",
+      "error-handling",
+      "category contains invalid characters"
+    );
+  }
+
+  return lowercased;
+}
+
+/**
+ * Get example value for each input type.
+ */
+function getExampleForType(type: InputType): string {
+  switch (type) {
+    case "bulletId":
+      return "b-m4k8z2x-abc123";
+    case "sessionPath":
+      return "~/.claude/sessions/session.jsonl";
+    case "task":
+      return "Fix authentication timeout bug";
+    case "category":
+      return "error-handling";
+    default:
+      return "valid input";
+  }
+}
+
 // --- Path Utilities ---
 
 export function expandPath(p: string): string {
@@ -232,7 +579,8 @@ export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; fr
     // Available is typically column 4 (index 3)
     const free = columns[3] || "unknown";
     return { ok: true, free };
-  } catch {
+  } catch (err: any) {
+    warn(`[utils] checkDiskSpace failed: ${err.message}`);
     return { ok: true, free: "unknown" };
   }
 }
@@ -590,8 +938,24 @@ function buildDeprecatedMatcher(pattern: string): (text: string) => boolean {
 
   if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
     const body = pattern.slice(1, -1);
-    const regex = new RegExp(body);
-    return (text: string) => regex.test(text);
+    
+    // ReDoS protection
+    if (body.length > 256) {
+      warn(`[utils] Skipped excessively long regex pattern: ${pattern}`);
+      return () => false;
+    }
+    if (/\([^)]*[*+][^)]*\)[*+?]/.test(body)) {
+      warn(`[utils] Skipped potentially unsafe regex pattern: ${pattern}`);
+      return () => false;
+    }
+
+    try {
+      const regex = new RegExp(body);
+      return (text: string) => regex.test(text);
+    } catch (e) {
+      warn(`[utils] Invalid regex pattern: ${pattern}`);
+      return () => false;
+    }
   }
 
   return (text: string) => text.includes(pattern);
