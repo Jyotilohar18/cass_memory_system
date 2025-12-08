@@ -168,6 +168,32 @@ export async function reflectOnSession(
 ): Promise<PlaybookDelta[]> {
   log(`Reflecting on diary ${diary.id}...`);
 
+  // Stubbed flow for tests: CM_REFLECTOR_STUBS contains an array of { deltas }
+  // objects representing each iteration's output. This bypasses LLM calls.
+  const stubEnv = process.env.CM_REFLECTOR_STUBS;
+  if (stubEnv) {
+    try {
+      const stubIterations: { deltas: PlaybookDelta[] }[] = JSON.parse(stubEnv);
+      const collected: PlaybookDelta[] = [];
+
+      for (const iteration of stubIterations) {
+        const injected = iteration.deltas.map((d) => {
+          if (d.type === "add") return { ...d, sourceSession: diary.sessionPath };
+          if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
+            return { ...d, sourceSession: diary.sessionPath };
+          }
+          return d;
+        });
+        collected.push(...injected);
+      }
+
+      return deduplicateDeltas(collected, []);
+    } catch (err) {
+      log(`Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`);
+      // fall through to real flow
+    }
+  }
+
   const allDeltas: PlaybookDelta[] = [];
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
   const cassHistory = await getCassHistoryForDiary(diary, config);
