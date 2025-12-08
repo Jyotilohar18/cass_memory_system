@@ -34,11 +34,9 @@ export function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
   for (const [cat, group] of Object.entries(byCategory)) {
     output += `### ${cat}\n`;
     for (const b of group) {
+      const maturity = b.maturity === "proven" ? "★" : b.maturity === "established" ? "●" : "○";
       // Format: [id] Content (stats)
-      const helpful = b.helpfulCount ?? 0;
-      const harmful = b.harmfulCount ?? 0;
-      const icon = iconFor(b.maturity);
-      output += `- [${b.id}] ${icon} ${b.content} (${helpful} helpful, ${harmful} harmful)\n`;
+      output += `- [${b.id}] ${maturity} ${b.content} (${b.helpfulCount}+ / ${b.harmfulCount}-)\n`;
     }
     output += "\n";
   }

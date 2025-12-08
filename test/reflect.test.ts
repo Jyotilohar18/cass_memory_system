@@ -27,7 +27,7 @@ describe("formatBulletsForPrompt", () => {
     expect(result).toContain("### testing");
     expect(result).toContain("[b1]");
     expect(result).toContain("Test rule");
-    expect(result).toContain("5 helpful, 1 harmful");
+    expect(result).toContain("(5+ / 1-)");
   });
 
   it("groups bullets by category", () => {
@@ -87,8 +87,7 @@ describe("formatBulletsForPrompt", () => {
       }),
     ];
     const result = formatBulletsForPrompt(bullets);
-    expect(result).toContain("10 helpful");
-    expect(result).toContain("2 harmful");
+    expect(result).toContain("(10+ / 2-)");
   });
 });
 
