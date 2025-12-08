@@ -100,7 +100,8 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
                 content: "Always use atomic writes for configuration files",
                 category: "best-practices"
               },
-              reason: "Prevents data corruption on crash"
+              reason: "Prevents data corruption on crash",
+              sourceSession: diary.sessionPath
             }
           ]
         }
@@ -109,8 +110,12 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const reflectResult = await reflectOnSession(diary, playbook, config);
 
       expect(reflectResult.deltas.length).toBeGreaterThan(0);
-      expect(reflectResult.deltas[0].type).toBe("add");
-      expect(reflectResult.deltas[0].sourceSession).toBe(diary.sessionPath);
+      const firstDelta = reflectResult.deltas[0];
+      expect(firstDelta.type).toBe("add");
+      if (firstDelta.type !== "add") {
+        throw new Error("Expected first delta to be add");
+      }
+      expect(firstDelta.sourceSession).toBe(diary.sessionPath);
 
       const curationResult = curatePlaybook(playbook, reflectResult.deltas, config);
 
@@ -292,7 +297,7 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const curationResult = curatePlaybook(playbook, reflectResult.deltas, config);
 
       const bullet = curationResult.playbook.bullets.find(b => b.id === "promotable");
-      expect(["established", "proven"]).toContain(bullet?.maturity);
+      expect(["established", "proven"]).toContain(bullet?.maturity ?? "");
     });
   });
 
@@ -489,7 +494,11 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
-      expect(reflectResult.deltas[0].sourceSession).toBe("/my/custom/session.jsonl");
+      const firstDelta = reflectResult.deltas[0];
+      if (firstDelta.type !== "add") {
+        throw new Error("Expected add delta");
+      }
+      expect(firstDelta.sourceSession).toBe("/my/custom/session.jsonl");
     });
 
     it("injects source session into feedback deltas", async () => {
@@ -503,7 +512,8 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
-      expect(reflectResult.deltas[0].sourceSession).toBe("/feedback/session.jsonl");
+      const delta = reflectResult.deltas[0];
+      expect("sourceSession" in delta ? delta.sourceSession : undefined).toBe("/feedback/session.jsonl");
     });
   });
 });

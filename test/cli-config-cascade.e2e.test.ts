@@ -90,7 +90,7 @@ describe("E2E: Config Cascade", () => {
     });
 
     it("getDefaultConfig returns a copy of defaults", () => {
-      const defaults1 = getDefaultConfig();
+      const defaults1: any = getDefaultConfig();
       const defaults2 = getDefaultConfig();
 
       // Should be equal but not the same object
@@ -415,6 +415,7 @@ describe("E2E: Config Cascade", () => {
 
         const config = await loadConfig({
           scoring: {
+            ...DEFAULT_CONFIG.scoring,
             decayHalfLifeDays: 30,
             harmfulMultiplier: 10
           }
@@ -688,7 +689,7 @@ auto_reflect: true
         process.env.HOME = home;
         process.chdir(repo);
 
-        for (const provider of ["openai", "anthropic", "google"]) {
+        for (const provider of ["openai", "anthropic", "google"] as const) {
           await writeFile(
             path.join(cassMemoryDir, "config.json"),
             JSON.stringify({ provider })

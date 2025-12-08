@@ -64,7 +64,8 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
     const deltas = result.deltas;
 
     expect(deltas).toHaveLength(2);
-    expect(deltas[0].bullet.content).toBe("Rule A");
-    expect(deltas[1].bullet.content).toBe("Rule B");
+    const addDeltas = deltas.filter((d): d is Extract<typeof deltas[number], { type: "add" }> => d.type === "add");
+    expect(addDeltas[0].bullet.content).toBe("Rule A");
+    expect(addDeltas[1].bullet.content).toBe("Rule B");
   });
 });
