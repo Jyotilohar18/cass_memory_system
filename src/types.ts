@@ -454,19 +454,54 @@ export const CassHitSchema = CassSearchHitSchema;
 export type CassHit = CassSearchHit;
 
 export const CassSearchResultSchema = z.object({
-  query: z.string(),
+  query: z.string().optional(),
   hits: z.array(CassSearchHitSchema),
-  totalCount: z.number()
+  totalCount: z.number().optional(),
+  _meta: z
+    .object({
+      elapsed_ms: z.number().optional(),
+      total_hits: z.number().optional(),
+      wildcard_fallback: z.boolean().optional(),
+      query_plan: z.string().optional(),
+    })
+    .optional(),
 });
 export type CassSearchResult = z.infer<typeof CassSearchResultSchema>;
 
 export const CassSearchOptionsSchema = z.object({
-  limit: z.number().default(20),
-  days: z.number().optional(),
+  limit: z.number().min(1).max(1000).default(20),
+  days: z.number().min(1).max(365).optional(),
   agent: z.string().optional(),
-  workspace: z.string().optional()
+  agents: z.array(z.string()).optional(),
+  workspace: z.string().optional(),
+  fields: z.array(z.string()).optional(),
+  maxTokens: z.number().min(10).max(2000).optional(),
+  highlight: z.boolean().optional(),
+  explain: z.boolean().optional(),
+  timeout: z.number().min(1000).max(60000).optional(),
 });
 export type CassSearchOptions = z.infer<typeof CassSearchOptionsSchema>;
+
+// Timeline types
+export const CassTimelineSessionSchema = z.object({
+  path: z.string(),
+  agent: z.string().optional(),
+  messageCount: z.number().optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+});
+export type CassTimelineSession = z.infer<typeof CassTimelineSessionSchema>;
+
+export const CassTimelineGroupSchema = z.object({
+  date: z.string(),
+  sessions: z.array(CassTimelineSessionSchema),
+});
+export type CassTimelineGroup = z.infer<typeof CassTimelineGroupSchema>;
+
+export const CassTimelineResultSchema = z.object({
+  groups: z.array(CassTimelineGroupSchema),
+});
+export type CassTimelineResult = z.infer<typeof CassTimelineResultSchema>;
 
 // ============================================================================
 // CONTEXT OUTPUT
