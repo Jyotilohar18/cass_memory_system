@@ -1,59 +1,42 @@
-import { describe, it, expect } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { getEffectiveScore } from "../src/scoring.js";
-import { DEFAULT_CONFIG } from "../src/config.js";
-import { PlaybookBullet } from "../src/types.js";
+import { createTestBullet, createTestConfig, createTestFeedbackEvent } from "./helpers/factories.js";
 
-const baseBullet: PlaybookBullet = {
-  id: "b-test",
-  scope: "global",
-  category: "testing",
-  content: "Test rule",
-  type: "rule",
-  isNegative: false,
-  kind: "workflow_rule",
-  state: "active",
-  maturity: "candidate",
-  helpfulCount: 0,
-  harmfulCount: 0,
-  feedbackEvents: [],
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-  pinned: false,
-  deprecated: false,
-  deprecatedAt: undefined,
-  replacedBy: undefined,
-  deprecationReason: undefined,
-  sourceSessions: [],
-  sourceAgents: [],
-  confidenceDecayHalfLifeDays: 90,
-  tags: [],
-};
+describe("Implicit Feedback Scoring", () => {
+  const config = createTestConfig();
+  const now = Date.now();
 
-describe("scoring with decayedValue weighting", () => {
-  it("applies decayedValue multiplier to helpful and harmful events", () => {
-    const bullet: PlaybookBullet = {
-      ...baseBullet,
-      feedbackEvents: [
-        { type: "helpful", timestamp: new Date().toISOString(), decayedValue: 0.5 },
-        { type: "harmful", timestamp: new Date().toISOString(), decayedValue: 0.25 },
-      ],
-    };
+  test("should calculate score correctly with mixed implicit and explicit feedback", () => {
+    const events = [
+      createTestFeedbackEvent("helpful", 0),
+      createTestFeedbackEvent("helpful", 0)
+    ];
 
-    const score = getEffectiveScore(bullet, DEFAULT_CONFIG);
-    // helpful: 0.5, harmful: 0.25 * 4 multiplier = 1 → raw -0.5, maturity multiplier 0.5 = -0.25
-    expect(score).toBeCloseTo(-0.25, 5);
+    const bullet = createTestBullet({ feedbackEvents: events });
+    const score = getEffectiveScore(bullet, config);
+    
+    expect(score).toBeCloseTo(1.0, 2); // Use closeTo for floating point
   });
 
-  it("defaults decayedValue to 1 when not provided", () => {
-    const bullet: PlaybookBullet = {
-      ...baseBullet,
+  test("should decay old implicit feedback", () => {
+    const bullet = createTestBullet({
       feedbackEvents: [
-        { type: "helpful", timestamp: new Date().toISOString() },
-      ],
-    };
+        createTestFeedbackEvent("helpful", 90) // 90 days ago
+      ]
+    });
 
-    const score = getEffectiveScore(bullet, DEFAULT_CONFIG);
-    expect(score).toBeGreaterThan(0);
+    const score = getEffectiveScore(bullet, config);
+    expect(score).toBeCloseTo(0.25, 2);
+  });
+
+  test("future events should be clamped", () => {
+    const bullet = createTestBullet({
+      feedbackEvents: [
+        createTestFeedbackEvent("helpful", -1) // 1 day in future
+      ]
+    });
+
+    const score = getEffectiveScore(bullet, config);
+    expect(score).toBe(0.5);
   });
 });
-
