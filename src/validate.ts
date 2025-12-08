@@ -1,12 +1,12 @@
-import { 
-  Config, 
-  PlaybookDelta, 
-  EvidenceGateResult, 
+import {
+  Config,
+  PlaybookDelta,
+  EvidenceGateResult,
   ValidationResult,
   ValidationEvidence
 } from "./types.js";
 import { runValidator } from "./llm.js";
-import { safeCassSearch } from "./cass.js";
+import { safeCassSearch, cassAvailable } from "./cass.js";
 import { extractKeywords, log } from "./utils.js";
 
 // --- Pre-LLM Gate ---
@@ -16,6 +16,21 @@ export async function evidenceCountGate(
   config: Config
 ): Promise<EvidenceGateResult> {
   const keywords = extractKeywords(content);
+  
+  // Fail-open check: If CASS is down, we shouldn't assume "no evidence".
+  // We should probably degrade to "draft" with a warning, or just return passed=true
+  // with a special reason.
+  if (!cassAvailable(config.cassPath)) {
+    return {
+      passed: true,
+      reason: "CASS unavailable - skipping evidence check (fail-open)",
+      suggestedState: "draft",
+      sessionCount: 0,
+      successCount: 0,
+      failureCount: 0
+    };
+  }
+
   const hits = await safeCassSearch(keywords.join(" "), {
     limit: 20,
     days: config.validationLookbackDays
@@ -141,14 +156,21 @@ export async function validateDelta(
   const supportingEvidence = evidence.filter(e => e.supports);
   const contradictingEvidence = evidence.filter(e => !e.supports);
 
+  // Treat REFINE as a cautionary accept so we don't drop potentially useful deltas.
+  const verdict =
+    llmResult.verdict === "REFINE" ? "ACCEPT_WITH_CAUTION" : llmResult.verdict;
+  const isValid = llmResult.verdict === "REJECT" ? false : true;
+  const adjustedConfidence =
+    verdict === "ACCEPT_WITH_CAUTION" ? Math.max(0, Math.min(1, llmResult.confidence * 0.8)) : llmResult.confidence;
+
   const validationResult: ValidationResult = {
-    valid: llmResult.valid,
-    verdict: llmResult.verdict,
-    confidence: llmResult.confidence,
+    valid: isValid,
+    verdict,
+    confidence: adjustedConfidence,
     reason: llmResult.reason,
     evidence,
     refinedRule: llmResult.suggestedRefinement,
-    approved: llmResult.valid,
+    approved: isValid,
     supportingEvidence,
     contradictingEvidence
   };

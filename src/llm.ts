@@ -5,7 +5,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateObject, generateText, type LanguageModel } from "ai";
+import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import type { Config, DiaryEntry } from "./types";
 
@@ -567,14 +567,14 @@ export async function generateContext(
     deprecatedPatterns
   });
 
-  const { text } = await generateText({
+  const { object } = await generateObject({
     model,
+    schema: z.object({ briefing: z.string() }),
     prompt,
     temperature: 0.3,
-    maxTokens: 2000,
   });
 
-  return text;
+  return object.briefing;
 }
 
 /**
