@@ -99,9 +99,11 @@ export async function cassSearch(
       timeout: (options.timeout || 30) * 1000 
     });
     
-    const rawHits = JSON.parse(stdout);
-    // Validate and parse with Zod
-    return rawHits.map((h: any) => CassHitSchema.parse(h));
+    const rawResult = JSON.parse(stdout);
+    // If it's an array (old version), map it. If object (new version), use .hits
+    const hits = Array.isArray(rawResult) ? rawResult : rawResult.hits || [];
+    
+    return hits.map((h: any) => CassHitSchema.parse(h));
   } catch (err: any) {
     // If cass returns non-zero exit code, it might still output JSON error or empty
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return [];
