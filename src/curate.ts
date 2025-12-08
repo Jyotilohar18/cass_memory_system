@@ -21,7 +21,6 @@ import {
 import { 
   checkForPromotion, 
   checkForDemotion, 
-  getEffectiveScore,
   getDecayedCounts 
 } from "./scoring.js";
 
@@ -77,13 +76,13 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     sourceAgents: bullet.sourceAgents,
     tags: [...bullet.tags, "inverted", "anti-pattern"],
     feedbackEvents: [],
-    helpfulEvents: [],
-    harmfulEvents: [],
+    helpfulEvents: [], // Fixed: Added missing field
+    harmfulEvents: [], // Fixed: Added missing field
     helpfulCount: 0,
     harmfulCount: 0,
     deprecated: false,
     pinned: false,
-    confidenceDecayHalfLifeDays: config.defaultDecayHalfLife ?? 90
+    confidenceDecayHalfLifeDays: config.defaultDecayHalfLife 
   };
 }
 
@@ -136,16 +135,16 @@ export function curatePlaybook(
           });
           similar.helpfulCount++;
           similar.updatedAt = now();
-          result.applied++; // We count reinforcement as applied work
+          result.applied++; 
           break;
         }
         
         // 3. Add new
-        const newBullet = addBullet(playbook, {
+        addBullet(playbook, {
           content,
           category: delta.bullet.category,
           tags: delta.bullet.tags
-        }, delta.sourceSession);
+        }, delta.sourceSession, config.defaultDecayHalfLife);
         
         existingHashes.add(hash);
         applied = true;
@@ -155,7 +154,6 @@ export function curatePlaybook(
       case "helpful": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          bullet.feedbackEvents = bullet.feedbackEvents || [];
           bullet.feedbackEvents.push({
             type: "helpful",
             timestamp: now(),
@@ -173,7 +171,6 @@ export function curatePlaybook(
       case "harmful": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          bullet.feedbackEvents = bullet.feedbackEvents || [];
           bullet.feedbackEvents.push({
             type: "harmful",
             timestamp: now(),
@@ -191,7 +188,6 @@ export function curatePlaybook(
       case "replace": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          // Preserve history, update content
           bullet.content = delta.newContent;
           bullet.updatedAt = now();
           applied = true;
@@ -209,14 +205,12 @@ export function curatePlaybook(
       case "merge": {
         const bulletsToMerge = delta.bulletIds.map(id => findBullet(playbook, id)).filter(b => b !== undefined) as PlaybookBullet[];
         if (bulletsToMerge.length >= 2) {
-          // Create merged
           const merged = addBullet(playbook, {
             content: delta.mergedContent,
-            category: bulletsToMerge[0].category, // Inherit category
+            category: bulletsToMerge[0].category, 
             tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
-          }, "merged"); // Source?
+          }, "merged", config.defaultDecayHalfLife); 
           
-          // Deprecate originals
           bulletsToMerge.forEach(b => {
             deprecateBullet(playbook, b.id, `Merged into ${merged.id}`, merged.id);
           });
@@ -255,7 +249,6 @@ export function curatePlaybook(
       deprecateBullet(playbook, bullet.id, "Auto-deprecated due to negative score");
       result.pruned++;
     } else if (demotionCheck !== bullet.maturity) {
-      // Demotion logic
       bullet.maturity = demotionCheck;
     }
   }
@@ -267,7 +260,6 @@ export function curatePlaybook(
     
     const { decayedHarmful, decayedHelpful } = getDecayedCounts(bullet, config);
     
-    // Threshold: 3+ harmful events AND ratio > 2:1 harmful:helpful
     if (decayedHarmful >= 3 && decayedHarmful > (decayedHelpful * 2)) {
       const antiPattern = invertToAntiPattern(bullet, config);
       playbook.bullets.push(antiPattern);
@@ -279,8 +271,7 @@ export function curatePlaybook(
         originalContent: bullet.content,
         antiPatternId: antiPattern.id,
         antiPatternContent: antiPattern.content,
-        bulletId: bullet.id,
-        reason: `Marked as toxic/anti-pattern`
+        bulletId: bullet.id 
       });
     }
   }
