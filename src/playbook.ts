@@ -180,9 +180,9 @@ export function addBullet(
   playbook: Playbook, 
   data: PartialBulletData, 
   sourceSession: string,
-  defaultDecayHalfLifeDays: number = 90
+  halfLifeDays: number = 90
 ): PlaybookBullet {
-  const agent = extractAgentFromPath(sourceSession); 
+  const agent = extractAgent(sourceSession); 
 
   const newBullet: PlaybookBullet = {
     id: generateBulletId(),
@@ -208,8 +208,7 @@ export function addBullet(
     harmfulEvents: [],
     deprecated: false,
     pinned: false,
-    deprecatedAt: undefined,
-    confidenceDecayHalfLifeDays: defaultDecayHalfLifeDays
+    confidenceDecayHalfLifeDays: halfLifeDays
   };
   
   playbook.bullets.push(newBullet);

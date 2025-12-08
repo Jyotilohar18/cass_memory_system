@@ -146,7 +146,7 @@ export function curatePlaybook(
           content,
           category: delta.bullet.category,
           tags: delta.bullet.tags
-        }, delta.sourceSession, config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90);
+        }, delta.sourceSession, config.scoring.decayHalfLifeDays);
         
         existingHashes.add(hash);
         applied = true;
