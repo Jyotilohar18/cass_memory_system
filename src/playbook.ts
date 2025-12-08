@@ -27,7 +27,6 @@ import {
 } from "./utils.js";
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
-import { isSemanticallyToxic } from "./sanitize.js";
 
 // --- Interfaces ---
 
@@ -293,14 +292,14 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
   
-  const globalToxic = await loadToxicLog("~/.cass-memory/toxic_bullets.log");
-  const repoToxic = await loadToxicLog(path.resolve(process.cwd(), ".cass", "toxic.log"));
-  const allToxic = [...globalToxic, ...repoToxic];
-  
-  if (allToxic.length > 0) {
+  const globalBlocked = await loadBlockedLog("~/.cass-memory/blocked.log");
+  const repoBlocked = await loadBlockedLog(path.resolve(process.cwd(), ".cass", "blocked.log"));
+  const allBlocked = [...globalBlocked, ...repoBlocked];
+
+  if (allBlocked.length > 0) {
     const cleanBullets: PlaybookBullet[] = [];
     for (const b of merged.bullets) {
-      if (!(await isSemanticallyToxic(b.content, allToxic))) {
+      if (!(await isBlockedContent(b.content, allBlocked))) {
         cleanBullets.push(b);
       }
     }
