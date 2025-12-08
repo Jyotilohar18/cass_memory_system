@@ -300,22 +300,68 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 
 ### Configuration
 
-Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (repo):
+Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (repo).
+Repo config overrides global config. Command-line flags override both.
+
+**Environment Variables:**
+
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | API key for Anthropic (Claude) |
+| `OPENAI_API_KEY` | API key for OpenAI |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | API key for Google Gemini |
+
+**LLM Settings:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `provider` | string | `"anthropic"` | LLM provider: `anthropic`, `openai`, `google` |
+| `model` | string | `"claude-sonnet-4-20250514"` | Model to use for reflection |
+| `budget.dailyLimit` | number | `0.10` | Max daily LLM spend (USD) |
+| `budget.monthlyLimit` | number | `2.00` | Max monthly LLM spend (USD) |
+
+**Scoring Settings:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `scoring.decayHalfLifeDays` | number | `90` | Days for feedback to decay to half value |
+| `scoring.harmfulMultiplier` | number | `4` | Weight harmful feedback N× more than helpful |
+| `scoring.minFeedbackForActive` | number | `3` | Min feedback to consider bullet "active" |
+| `scoring.minHelpfulForProven` | number | `10` | Min helpful marks for "proven" status |
+| `scoring.maxHarmfulRatioForProven` | number | `0.1` | Max harmful ratio for "proven" (10%) |
+
+**Context Settings:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxBulletsInContext` | number | `50` | Max rules to return in context |
+| `maxHistoryInContext` | number | `10` | Max history snippets to return |
+| `sessionLookbackDays` | number | `7` | Days to search for related sessions |
+| `minRelevanceScore` | number | `0.1` | Min relevance to include a bullet |
+
+**Behavior Settings:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `autoReflect` | boolean | `false` | Auto-run reflection after sessions |
+| `validationEnabled` | boolean | `true` | Validate new rules against history |
+| `enrichWithCrossAgent` | boolean | `true` | Include other agents' sessions |
+| `semanticSearchEnabled` | boolean | `false` | Enable embedding-based search |
+| `dedupSimilarityThreshold` | number | `0.85` | Threshold for duplicate detection |
+
+**Example config.json:**
 
 ```json
 {
-  "llm": {
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-20250514",
-    "budget": { "daily": 0.10, "monthly": 2.00 }
-  },
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "budget": { "dailyLimit": 0.50, "monthlyLimit": 10.00 },
   "scoring": {
-    "decayHalfLifeDays": 90,
-    "harmfulMultiplier": 4
+    "decayHalfLifeDays": 60,
+    "harmfulMultiplier": 5
   },
-  "features": {
-    "crossAgent": false
-  }
+  "maxBulletsInContext": 30,
+  "enrichWithCrossAgent": false
 }
 ```
 
