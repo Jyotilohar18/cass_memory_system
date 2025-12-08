@@ -283,6 +283,30 @@ describe("withLock - Stale Lock Detection", () => {
     });
   });
 
+  it("honors custom staleLockThresholdMs", async () => {
+    await withTempDir("lock-stale-custom", async (tempDir) => {
+      const targetPath = join(tempDir, "test.txt");
+      await writeFile(targetPath, "content");
+      const lockPath = `${targetPath}.lock.d`;
+
+      // Create a lock dir with mtime 2s ago
+      await mkdir(lockPath);
+      await writeFile(join(lockPath, "pid"), "999999");
+      const twoSecondsAgo = Date.now() - 2_000;
+      const { utimes } = await import("node:fs/promises");
+      await utimes(lockPath, twoSecondsAgo / 1000, twoSecondsAgo / 1000);
+
+      // With default (30s) this would NOT be considered stale; using 1s threshold should remove it.
+      const result = await withLock(
+        targetPath,
+        async () => "custom stale removed",
+        { staleLockThresholdMs: 1_000 }
+      );
+
+      expect(result).toBe("custom stale removed");
+    });
+  });
+
   it("does not remove fresh lock directories", async () => {
     await withTempDir("lock-fresh", async (tempDir) => {
       const targetPath = join(tempDir, "test.txt");

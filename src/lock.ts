@@ -40,11 +40,11 @@ export async function releaseAllLocks(): Promise<number> {
 /**
  * Check if a lock dir is stale (older than threshold).
  */
-async function isLockStale(lockPath: string): Promise<boolean> {
+async function isLockStale(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_MS): Promise<boolean> {
   try {
     const stat = await fs.stat(lockPath);
     const ageMs = Date.now() - stat.mtimeMs;
-    return ageMs > STALE_LOCK_THRESHOLD_MS;
+    return ageMs > thresholdMs;
   } catch {
     return false;
   }
@@ -53,9 +53,9 @@ async function isLockStale(lockPath: string): Promise<boolean> {
 /**
  * Try to clean up a stale lock dir.
  */
-async function tryRemoveStaleLock(lockPath: string): Promise<boolean> {
+async function tryRemoveStaleLock(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_MS): Promise<boolean> {
   try {
-    if (await isLockStale(lockPath)) {
+    if (await isLockStale(lockPath, thresholdMs)) {
       await fs.rm(lockPath, { recursive: true, force: true });
       console.warn(`[lock] Removed stale lock: ${lockPath}`);
       return true;
@@ -77,6 +77,7 @@ export async function withLock<T>(
 ): Promise<T> {
   const maxRetries = options.retries ?? 20;
   const retryDelay = options.delay ?? 100;
+  const staleThreshold = options.staleLockThresholdMs ?? STALE_LOCK_THRESHOLD_MS;
   // Use .lock.d to clearly indicate directory
   const lockPath = `${expandPath(targetPath)}.lock.d`;
   const pid = process.pid.toString();
@@ -116,7 +117,7 @@ export async function withLock<T>(
       }
     } catch (err: any) {
       if (err.code === "EEXIST") {
-        if (await tryRemoveStaleLock(lockPath)) {
+        if (await tryRemoveStaleLock(lockPath, staleThreshold)) {
           continue;
         }
         await new Promise(resolve => setTimeout(resolve, retryDelay));
