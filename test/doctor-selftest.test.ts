@@ -152,7 +152,7 @@ describe("runSelfTest", () => {
 
         const config = createTestConfig({
           playbookPath,
-          sanitization: { enabled: true, extraPatterns: [], auditLog: false }
+          sanitization: { enabled: true, extraPatterns: [], auditLog: false, auditLevel: "info" }
         });
         const checks = await runSelfTest(config);
 
@@ -172,7 +172,7 @@ describe("runSelfTest", () => {
 
         const config = createTestConfig({
           playbookPath,
-          sanitization: { enabled: false, extraPatterns: [], auditLog: false }
+          sanitization: { enabled: false, extraPatterns: [], auditLog: false, auditLevel: "off" }
         });
         const checks = await runSelfTest(config);
 
