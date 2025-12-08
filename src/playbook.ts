@@ -7,7 +7,7 @@ import {
   PlaybookBullet,
   Config,
   PlaybookBulletSchema,
-  BulletMaturity
+  NewBulletData
 } from "./types.js";
 import {
   expandPath,
@@ -20,6 +20,8 @@ import {
   error as logError,
   hashContent,
   jaccardSimilarity,
+  atomicWrite,
+  extractAgentFromPath
 } from "./utils.js";
 import { z } from "zod";
 
@@ -49,8 +51,7 @@ export function createEmptyPlaybook(name = "playbook"): Playbook {
   };
 }
 
-export async function loadPlaybook(target: Config | string): Promise<Playbook> {
-  const filePath = typeof target === "string" ? target : target.playbookPath;
+export async function loadPlaybook(filePath: string): Promise<Playbook> {
   const expanded = expandPath(filePath);
   
   if (!(await fileExists(expanded))) {
@@ -80,25 +81,10 @@ export async function loadPlaybook(target: Config | string): Promise<Playbook> {
   }
 }
 
-export async function savePlaybook(playbook: Playbook, target: Config | string): Promise<void> {
-  const filePath = typeof target === "string" ? target : target.playbookPath;
-  const expanded = expandPath(filePath);
-  await ensureDir(path.dirname(expanded));
-  
-  // Update metadata
+export async function savePlaybook(playbook: Playbook, filePath: string): Promise<void> {
   playbook.metadata.lastReflection = now();
-  
   const yamlStr = yaml.stringify(playbook);
-  const tempPath = `${expanded}.tmp`;
-  
-  try {
-    await fs.writeFile(tempPath, yamlStr, "utf-8");
-    await fs.rename(tempPath, expanded);
-  } catch (err: any) {
-    logError(`Failed to save playbook to ${expanded}: ${err.message}`);
-    try { await fs.unlink(tempPath); } catch {}
-    throw err;
-  }
+  await atomicWrite(filePath, yamlStr);
 }
 
 // --- Cascading & Merging ---
@@ -113,7 +99,7 @@ async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
       .split("\n")
       .filter(line => line.trim())
       .map(line => JSON.parse(line))
-      .filter(entry => entry.id && entry.content); // Basic validation
+      .filter(entry => entry.id && entry.content); 
   } catch {
     return [];
   }
@@ -123,12 +109,9 @@ async function isSemanticallyToxic(content: string, toxicLog: ToxicEntry[]): Pro
   const hash = hashContent(content);
   
   for (const entry of toxicLog) {
-    // Exact match
     if (hashContent(entry.content) === hash) return true;
-    
-    // Semantic match (Jaccard for V1)
     if (jaccardSimilarity(content, entry.content) > 0.85) {
-      log(`Blocked toxic content: "${content.slice(0, 50)}..." matches blocked "${entry.content.slice(0, 50)}..."`, true);
+      log(`Blocked toxic content: "${content.slice(0, 50)}"... matches blocked "${entry.content.slice(0, 50)}"...`, true);
       return true;
     }
   }
@@ -143,39 +126,31 @@ function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {
   
   const bulletMap = new Map<string, PlaybookBullet>();
   
-  // Add global bullets
   for (const b of global.bullets) {
     bulletMap.set(b.id, b);
   }
   
-  // Add/Overwrite repo bullets
   for (const b of repo.bullets) {
     bulletMap.set(b.id, b);
   }
   
   merged.bullets = Array.from(bulletMap.values());
-  
-  // Merge deprecated patterns
   merged.deprecatedPatterns = [...global.deprecatedPatterns, ...repo.deprecatedPatterns];
   
   return merged;
 }
 
 export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
-  // 1. Load global
   const globalPlaybook = await loadPlaybook(config.playbookPath);
   
-  // 2. Load repo (if exists)
   let repoPlaybook: Playbook | null = null;
   const repoPath = path.resolve(process.cwd(), ".cass", "playbook.yaml");
   if (await fileExists(repoPath)) {
     repoPlaybook = await loadPlaybook(repoPath);
   }
   
-  // 3. Merge
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
   
-  // 4. Filter Toxic
   const globalToxic = await loadToxicLog("~/.cass-memory/toxic_bullets.log");
   const repoToxic = await loadToxicLog(path.resolve(process.cwd(), ".cass", "toxic.log"));
   const allToxic = [...globalToxic, ...repoToxic];
@@ -199,16 +174,15 @@ export function findBullet(playbook: Playbook, id: string): PlaybookBullet | und
   return playbook.bullets.find(b => b.id === id);
 }
 
-// Helper type for partial bullet
 type PartialBulletData = Partial<z.infer<typeof PlaybookBulletSchema>> & { content: string; category: string };
 
 export function addBullet(
   playbook: Playbook, 
   data: PartialBulletData, 
-  sourceSession: string
+  sourceSession: string,
+  defaultDecayHalfLifeDays: number = 90
 ): PlaybookBullet {
-  // Helper to extract agent from session path safely
-  const agent = extractAgent(sourceSession); 
+  const agent = extractAgentFromPath(sourceSession); 
 
   const newBullet: PlaybookBullet = {
     id: generateBulletId(),
@@ -232,9 +206,10 @@ export function addBullet(
     feedbackEvents: [],
     helpfulEvents: [],
     harmfulEvents: [],
-    confidenceDecayHalfLifeDays: 90,
     deprecated: false,
-    pinned: false
+    pinned: false,
+    deprecatedAt: undefined,
+    confidenceDecayHalfLifeDays: defaultDecayHalfLifeDays
   };
   
   playbook.bullets.push(newBullet);
@@ -275,13 +250,4 @@ export function getBulletsByCategory(
 ): PlaybookBullet[] {
   const active = getActiveBullets(playbook);
   return active.filter(b => b.category.toLowerCase() === category.toLowerCase());
-}
-
-// Helper since utils.ts didn't seem to have extractAgentFromPath in the write_file call I made
-function extractAgent(sessionPath: string): string {
-  if (sessionPath.includes(".claude")) return "claude";
-  if (sessionPath.includes(".cursor")) return "cursor";
-  if (sessionPath.includes(".codex")) return "codex";
-  if (sessionPath.includes(".aider")) return "aider";
-  return "unknown";
 }

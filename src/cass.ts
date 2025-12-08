@@ -1,15 +1,30 @@
-import { execFile, spawn, execSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { 
-  CassHit, 
-  CassHitSchema 
-} from "./types.js";
+import { CassHit, CassHitSchema } from "./types.js";
 import { log, error } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
 
+interface CassTimelineSession {
+  path: string;
+  agent: string;
+  messageCount?: number;
+  startTime?: string;
+  endTime?: string;
+}
+
+interface CassTimelineGroup {
+  date: string;
+  sessions: CassTimelineSession[];
+}
+
+export interface CassTimelineResult {
+  groups: CassTimelineGroup[];
+}
+
 // --- Constants ---
 
+// Numeric constants (kept for legacy callers)
 export const CASS_EXIT_CODES = {
   SUCCESS: 0,
   USAGE_ERROR: 2,
@@ -20,28 +35,45 @@ export const CASS_EXIT_CODES = {
   TIMEOUT: 10,
 } as const;
 
+// Structured mapping for recovery logic
+export const CASS_EXIT_CODE_MAP: Record<
+  number,
+  { name: string; retryable: boolean; action?: "rebuild_index" | "reduce_limit" }
+> = {
+  0: { name: "success", retryable: false },
+  2: { name: "usage_error", retryable: false },
+  3: { name: "index_missing", retryable: true, action: "rebuild_index" },
+  4: { name: "not_found", retryable: false },
+  5: { name: "idempotency_mismatch", retryable: false },
+  9: { name: "unknown", retryable: false },
+  10: { name: "timeout", retryable: true, action: "reduce_limit" },
+};
+
+function getExitInfo(code: number | undefined) {
+  return (code !== undefined && CASS_EXIT_CODE_MAP[code]) || CASS_EXIT_CODE_MAP[CASS_EXIT_CODES.UNKNOWN];
+}
+
 // --- Health & Availability ---
 
 export function cassAvailable(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} --version`, { stdio: "pipe" });
-    return true;
+    const result = spawnSync(cassPath, ["health"], { stdio: "ignore", timeout: 200 });
+    return result.status === 0;
   } catch {
     return false;
   }
 }
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
-   try {
-     const { spawnSync } = require("node:child_process");
-     const result = spawnSync(cassPath, ["health"], { stdio: "pipe" });
-     
-     if (result.status === 0) return false;
-     if (result.status === CASS_EXIT_CODES.INDEX_MISSING || result.status === 1) return true;
-     return false;
-   } catch {
-     return false;
-   }
+  try {
+    const result = spawnSync(cassPath, ["health"], { stdio: "pipe", timeout: 2000 });
+
+    if (result.status === 0) return false;
+    if (result.status === CASS_EXIT_CODES.INDEX_MISSING || result.status === 1) return true;
+    return true; // treat other non-zero codes as needing recovery
+  } catch {
+    return true;
+  }
 }
 
 // --- Indexing ---
@@ -128,8 +160,9 @@ export async function safeCassSearch(
     return await cassSearch(query, options, cassPath);
   } catch (err: any) {
     const exitCode = err.code;
+    const info = getExitInfo(exitCode);
     
-    if (exitCode === CASS_EXIT_CODES.INDEX_MISSING) {
+    if (info.action === "rebuild_index") {
       log("Index missing, rebuilding...", true);
       try {
         await cassIndex(cassPath);
@@ -140,7 +173,7 @@ export async function safeCassSearch(
       }
     }
     
-    if (exitCode === CASS_EXIT_CODES.TIMEOUT) {
+    if (info.action === "reduce_limit") {
       log("Search timed out, retrying with reduced limit...", true);
       const reducedOptions = { ...options, limit: Math.max(1, Math.floor((options.limit || 10) / 2)) };
       try {
@@ -150,7 +183,7 @@ export async function safeCassSearch(
       }
     }
     
-    error(`Cass search failed: ${err.message}`);
+    error(`Cass search failed: ${info.name || "unknown"} (${err.message})`);
     return [];
   }
 }
@@ -206,11 +239,29 @@ export async function cassStats(cassPath = "cass"): Promise<any | null> {
 export async function cassTimeline(
   days: number,
   cassPath = "cass"
-): Promise<any> {
+): Promise<CassTimelineResult> {
   try {
     const { stdout } = await execFileAsync(cassPath, ["timeline", "--days", days.toString(), "--json"]);
-    return JSON.parse(stdout);
-  } catch {
+    const parsed = JSON.parse(stdout);
+
+    // Basic structural validation with defensive defaults
+    const groups = Array.isArray(parsed?.groups) ? parsed.groups : [];
+    const sanitizedGroups: CassTimelineGroup[] = groups.map((g: any) => ({
+      date: typeof g?.date === "string" ? g.date : "",
+      sessions: Array.isArray(g?.sessions)
+        ? g.sessions.map((s: any) => ({
+            path: typeof s?.path === "string" ? s.path : "",
+            agent: typeof s?.agent === "string" ? s.agent : "",
+            messageCount: typeof s?.messageCount === "number" ? s.messageCount : undefined,
+            startTime: typeof s?.startTime === "string" ? s.startTime : undefined,
+            endTime: typeof s?.endTime === "string" ? s.endTime : undefined,
+          }))
+        : [],
+    }));
+
+    return { groups: sanitizedGroups };
+  } catch (err: any) {
+    log(`cass timeline failed: ${err?.message ?? err}`, true);
     return { groups: [] };
   }
 }
