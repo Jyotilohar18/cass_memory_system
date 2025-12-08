@@ -19,6 +19,7 @@ import { quickstartCommand } from "./commands/quickstart.js";
 import { topCommand } from "./commands/top.js";
 import { staleCommand } from "./commands/stale.js";
 import { whyCommand } from "./commands/why.js";
+import { undoCommand } from "./commands/undo.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -137,6 +138,15 @@ program.command("why")
   .option("--verbose", "Show full details including all sessions")
   .option("--json", "Output JSON")
   .action(async (id: string, opts: any) => await whyCommand(id, opts));
+
+// --- Undo ---
+program.command("undo")
+  .description("Revert bad curation decisions (un-deprecate, undo feedback, delete)")
+  .argument("<bulletId>", "ID of the bullet to undo")
+  .option("--feedback", "Undo the most recent feedback event instead of un-deprecating")
+  .option("--hard", "Permanently delete the bullet (cannot be undone)")
+  .option("--json", "Output JSON")
+  .action(async (id: string, opts: any) => await undoCommand(id, opts));
 
 // --- Usage ---
 program.command("usage")

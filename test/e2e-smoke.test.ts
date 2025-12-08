@@ -172,4 +172,35 @@ describe("E2E CLI Smoke Test", () => {
     expect(typeof usage.today).toBe("number");
     expect(typeof usage.dailyLimit).toBe("number");
   });
+
+  test("cm undo handles non-existent bullet gracefully", () => {
+    const result = runCm(["undo", "b-nonexistent", "--json"], testDir);
+
+    // Should fail with exit code 1
+    expect(result.exitCode).toBe(1);
+
+    const response = JSON.parse(result.stdout);
+    expect(response.error).toContain("not found");
+  });
+
+  test("cm undo --feedback fails when no feedback to undo", () => {
+    // First add a bullet
+    const addResult = runCm([
+      "playbook", "add",
+      "Test rule for undo testing",
+      "--category", "testing",
+      "--json"
+    ], testDir);
+    expect(addResult.exitCode).toBe(0);
+    const bullet = JSON.parse(addResult.stdout).bullet;
+
+    // Try to undo feedback when there's none
+    const result = runCm(["undo", bullet.id, "--feedback", "--json"], testDir);
+
+    // Should fail with exit code 1
+    expect(result.exitCode).toBe(1);
+
+    const response = JSON.parse(result.stdout);
+    expect(response.error).toContain("No feedback events to undo");
+  });
 });

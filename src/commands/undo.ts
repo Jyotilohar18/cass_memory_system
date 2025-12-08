@@ -1,0 +1,293 @@
+/**
+ * undo command - Revert bad curation decisions
+ *
+ * Supports:
+ * - Un-deprecate a bullet that was accidentally forgotten/deprecated
+ * - Undo the most recent feedback event on a bullet
+ * - Remove a bullet entirely (hard delete)
+ */
+import { loadConfig } from "../config.js";
+import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
+import { PlaybookBullet, Config, FeedbackEvent } from "../types.js";
+import { now, expandPath } from "../utils.js";
+import chalk from "chalk";
+import path from "node:path";
+import fs from "node:fs/promises";
+
+export interface UndoFlags {
+  feedback?: boolean;
+  hard?: boolean;
+  json?: boolean;
+  reason?: string;
+}
+
+interface UndoResult {
+  success: boolean;
+  bulletId: string;
+  action: "un-deprecate" | "undo-feedback" | "hard-delete";
+  before: {
+    deprecated?: boolean;
+    deprecatedAt?: string;
+    deprecationReason?: string;
+    state?: string;
+    maturity?: string;
+    helpfulCount?: number;
+    harmfulCount?: number;
+    lastFeedback?: FeedbackEvent | null;
+  };
+  after: {
+    deprecated?: boolean;
+    state?: string;
+    maturity?: string;
+    helpfulCount?: number;
+    harmfulCount?: number;
+    feedbackEventsCount?: number;
+    deleted?: boolean;
+  };
+  message: string;
+}
+
+/**
+ * Un-deprecate a bullet - restore it to active state
+ */
+function undeprecateBullet(bullet: PlaybookBullet): UndoResult["before"] {
+  const before = {
+    deprecated: bullet.deprecated,
+    deprecatedAt: bullet.deprecatedAt,
+    deprecationReason: bullet.deprecationReason,
+    state: bullet.state,
+    maturity: bullet.maturity
+  };
+
+  // Restore to active state
+  bullet.deprecated = false;
+  bullet.deprecatedAt = undefined;
+  bullet.deprecationReason = undefined;
+  bullet.state = "active";
+  // Restore to candidate if it was deprecated, otherwise keep current
+  if (bullet.maturity === "deprecated") {
+    bullet.maturity = "candidate";
+  }
+  bullet.updatedAt = now();
+
+  return before;
+}
+
+/**
+ * Undo the most recent feedback event on a bullet
+ */
+function undoLastFeedback(bullet: PlaybookBullet): {
+  before: UndoResult["before"];
+  removedEvent: FeedbackEvent | null;
+} {
+  const events = bullet.feedbackEvents || [];
+  const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+
+  const before = {
+    helpfulCount: bullet.helpfulCount,
+    harmfulCount: bullet.harmfulCount,
+    lastFeedback: lastEvent
+  };
+
+  if (lastEvent) {
+    // Remove the last event
+    bullet.feedbackEvents = events.slice(0, -1);
+
+    // Adjust counts
+    if (lastEvent.type === "helpful") {
+      bullet.helpfulCount = Math.max(0, (bullet.helpfulCount || 0) - 1);
+    } else if (lastEvent.type === "harmful") {
+      bullet.harmfulCount = Math.max(0, (bullet.harmfulCount || 0) - 1);
+    }
+
+    bullet.updatedAt = now();
+  }
+
+  return { before, removedEvent: lastEvent };
+}
+
+/**
+ * Get the playbook path where the bullet lives (global or repo)
+ */
+async function findBulletLocation(
+  bulletId: string,
+  config: Config
+): Promise<{ playbook: ReturnType<typeof loadPlaybook> extends Promise<infer T> ? T : never; path: string; location: "global" | "repo" } | null> {
+  // Check repo-level first
+  const repoPath = path.resolve(process.cwd(), ".cass", "playbook.yaml");
+  try {
+    const stat = await fs.stat(repoPath);
+    if (stat.isFile()) {
+      const repoPlaybook = await loadPlaybook(repoPath);
+      const bullet = findBullet(repoPlaybook, bulletId);
+      if (bullet) {
+        return { playbook: repoPlaybook, path: repoPath, location: "repo" };
+      }
+    }
+  } catch {
+    // Repo playbook doesn't exist
+  }
+
+  // Check global
+  const globalPath = expandPath(config.playbookPath);
+  const globalPlaybook = await loadPlaybook(globalPath);
+  const bullet = findBullet(globalPlaybook, bulletId);
+  if (bullet) {
+    return { playbook: globalPlaybook, path: globalPath, location: "global" };
+  }
+
+  return null;
+}
+
+export async function undoCommand(
+  bulletId: string,
+  flags: UndoFlags = {}
+): Promise<void> {
+  const config = await loadConfig();
+
+  // Find which playbook contains this bullet
+  const location = await findBulletLocation(bulletId, config);
+
+  if (!location) {
+    const error = { error: `Bullet not found: ${bulletId}` };
+    if (flags.json) {
+      console.log(JSON.stringify(error, null, 2));
+    } else {
+      console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
+      console.log(chalk.gray("Use 'cm playbook list' to see available bullets."));
+    }
+    process.exit(1);
+  }
+
+  const { playbook, path: playbookPath, location: loc } = location;
+  const bullet = findBullet(playbook, bulletId)!;
+
+  let result: UndoResult;
+
+  if (flags.hard) {
+    // Hard delete - remove the bullet entirely
+    const before = {
+      deprecated: bullet.deprecated,
+      state: bullet.state,
+      maturity: bullet.maturity,
+      helpfulCount: bullet.helpfulCount,
+      harmfulCount: bullet.harmfulCount
+    };
+
+    const index = playbook.bullets.findIndex(b => b.id === bulletId);
+    playbook.bullets.splice(index, 1);
+    await savePlaybook(playbook, playbookPath);
+
+    result = {
+      success: true,
+      bulletId,
+      action: "hard-delete",
+      before,
+      after: { deleted: true },
+      message: `Permanently deleted bullet ${bulletId} from ${loc} playbook`
+    };
+  } else if (flags.feedback) {
+    // Undo last feedback event
+    const { before, removedEvent } = undoLastFeedback(bullet);
+
+    if (!removedEvent) {
+      const error = { error: `No feedback events to undo for bullet ${bulletId}` };
+      if (flags.json) {
+        console.log(JSON.stringify(error, null, 2));
+      } else {
+        console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
+      }
+      process.exit(1);
+    }
+
+    await savePlaybook(playbook, playbookPath);
+
+    result = {
+      success: true,
+      bulletId,
+      action: "undo-feedback",
+      before,
+      after: {
+        helpfulCount: bullet.helpfulCount,
+        harmfulCount: bullet.harmfulCount,
+        feedbackEventsCount: (bullet.feedbackEvents || []).length
+      },
+      message: `Removed last ${removedEvent.type} feedback from ${bulletId}`
+    };
+  } else {
+    // Default: un-deprecate
+    if (!bullet.deprecated) {
+      const error = {
+        error: `Bullet ${bulletId} is not deprecated`,
+        hint: "Use --feedback to undo the last feedback event, or --hard to delete"
+      };
+      if (flags.json) {
+        console.log(JSON.stringify(error, null, 2));
+      } else {
+        console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
+        console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
+      }
+      process.exit(1);
+    }
+
+    const before = undeprecateBullet(bullet);
+    await savePlaybook(playbook, playbookPath);
+
+    result = {
+      success: true,
+      bulletId,
+      action: "un-deprecate",
+      before,
+      after: {
+        deprecated: bullet.deprecated,
+        state: bullet.state,
+        maturity: bullet.maturity
+      },
+      message: `Restored bullet ${bulletId} from deprecated state`
+    };
+  }
+
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    printUndoResult(result, bullet);
+  }
+}
+
+function printUndoResult(result: UndoResult, bullet?: PlaybookBullet): void {
+  console.log();
+
+  if (result.action === "hard-delete") {
+    console.log(chalk.red.bold("HARD DELETE"));
+    console.log(chalk.gray("─".repeat(40)));
+    console.log(`Bullet ${chalk.bold(result.bulletId)} has been permanently deleted.`);
+    console.log(chalk.yellow("This action cannot be undone."));
+  } else if (result.action === "undo-feedback") {
+    console.log(chalk.blue.bold("UNDO FEEDBACK"));
+    console.log(chalk.gray("─".repeat(40)));
+    console.log(`Bullet: ${chalk.bold(result.bulletId)}`);
+    if (bullet) {
+      console.log(`Content: ${chalk.cyan(`"${bullet.content.slice(0, 60)}${bullet.content.length > 60 ? "..." : ""}"`)}`)
+    }
+    console.log();
+    console.log(`Removed: ${result.before.lastFeedback?.type} feedback from ${result.before.lastFeedback?.timestamp?.slice(0, 10) || "unknown"}`);
+    console.log(`Counts: ${result.before.helpfulCount}+ / ${result.before.harmfulCount}- → ${result.after.helpfulCount}+ / ${result.after.harmfulCount}-`);
+  } else {
+    console.log(chalk.green.bold("UN-DEPRECATE"));
+    console.log(chalk.gray("─".repeat(40)));
+    console.log(`Bullet: ${chalk.bold(result.bulletId)}`);
+    if (bullet) {
+      console.log(`Content: ${chalk.cyan(`"${bullet.content.slice(0, 60)}${bullet.content.length > 60 ? "..." : ""}"`)}`)
+    }
+    console.log();
+    console.log(`State: ${chalk.red(result.before.state || "retired")} → ${chalk.green(result.after.state)}`);
+    console.log(`Maturity: ${chalk.red(result.before.maturity || "deprecated")} → ${chalk.green(result.after.maturity)}`);
+    if (result.before.deprecationReason) {
+      console.log(`Original reason: ${chalk.gray(result.before.deprecationReason)}`);
+    }
+  }
+
+  console.log();
+  console.log(chalk.green(`✓ ${result.message}`));
+  console.log();
+}
