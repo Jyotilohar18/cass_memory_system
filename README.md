@@ -216,12 +216,14 @@ cass-memory doctor --json   # quick health check
 
 ### Command cheat sheet
 - `cass-memory init --json` — create global config/playbook (use `--force` to reinit)
+- `cass-memory init --starter <name>` — initialize and seed with starter rules (`cass-memory starters` to list)
 - `cass-memory context "<task>" --json` — get rules + history for a task
 - `cass-memory mark <rule-id> --helpful|--harmful --reason "<why>" --json` — record feedback
 - `cass-memory reflect --days 7 --json` — process recent sessions into playbook deltas
 - `cass-memory stats --json` — playbook health summary
 - `cass-memory doctor --json` — system health check (cass, LLM keys, file perms)
 - `cass-memory project --format agents.md --output AGENTS.md` — export rules for agent prompts
+- `cass-memory starters` — list built-in and custom starter playbooks
 - `cass-memory audit --days 7 --json` — check recent sessions for rule violations
 
 ### Typical workflow
@@ -280,6 +282,64 @@ cm doctor
   - *Procedural* (Playbook): distilled rules in global `~/.cass-memory/playbook.yaml` plus repo `.cass/playbook.yaml`, merged at runtime.
 - **Deterministic merges**: Playbooks cascade global → repo; toxic blocklists prune unsafe content; deprecated patterns stay searchable but are excluded from active rules.
 - **Cass wrappers**: `src/cass.ts` handles health checks, retries, index rebuilds, and timeout fallbacks so context/reflect degrade gracefully when search is slow or missing.
+
+### Implementation map (code → pipeline)
+
+```
+cass session log
+   │   (export + sanitize in src/cass.ts / src/sanitize.ts)
+   ▼
+Diary entry (src/diary.ts) ──► Reflection loop (src/orchestrator.ts → src/reflect.ts)
+   │                              │
+   │                              ├─ Evidence gate + validator (src/validate.ts)
+   │                              ▼
+   └─► Playbook deltas ──► Deterministic curation (src/curate.ts)
+                                 │
+                                 ├─ Playbook persisted (src/playbook.ts)
+                                 └─ Scores/decay (src/scoring.ts)
+                                            │
+                                            ▼
+                               Context/output (src/commands/context.ts, src/commands/serve.ts)
+```
+
+- **Generator/Context**: `contextCommand` hydrates rules by loading the merged playbook, running cass lookups (fallback-friendly wrappers in `src/cass.ts`), and ranking via `src/scoring.ts`.
+- **Reflector**: `orchestrateReflection` discovers unprocessed sessions (`findUnprocessedSessions`), creates diary entries, and iterates `reflectOnSession` with dedup + early-exit guards.
+- **Validator**: `validateDelta` runs an evidence-count gate against cass history, then (optionally) an LLM validator; short/ambiguous rules return as draft rather than silently failing.
+- **Curator**: `curatePlaybook` mutates playbooks deterministically—semantic dedup, conflict hints, helpful/harmful feedback, promotion/demotion, and anti-pattern inversion—no LLM involved.
+- **Serve**: `serveCommand` exposes the same tools over HTTP MCP (stdio/SSE intentionally disabled per project policy).
+
+### Data flow (evidence-first)
+
+```
+Session (cass) ──► Diary (status, learnings, relatedSessions)
+    └─ sanitized text & anchors
+         └─► Deltas (add/helpful/harmful/replace/deprecate/merge)
+              └─► Evidence gate (cass search heuristics)
+                    └─► Optional LLM validator (structured verdict)
+                          └─► Curation (dedup/conflict/inversion)
+                                └─► Playbook YAML (global + repo)
+                                      └─► Context output (rules + anti-patterns + history)
+```
+
+### Schema quick reference (see `src/types.ts`)
+
+- `DiaryEntry`: identity, status, accomplishments/decisions/challenges/preferences, keyLearnings, tags, `relatedSessions` (agent + snippet) for cross-agent enrichment.
+- `PlaybookBullet`: `content`, `category`, `tags`, `scope` (global/workspace/language/framework/task), `kind` (stack_pattern | project_convention | workflow_rule | anti_pattern), `type` (`rule` | `anti-pattern`), `state`/`maturity`, provenance (`sourceSessions`, `sourceAgents`), decay config, and optional `searchPointer`.
+- `PlaybookDelta`: `add`, `helpful`, `harmful`, `replace`, `deprecate`, `merge`, plus `sourceSession` for auditability.
+- `CurationResult` & `DecisionLogEntry`: capture applied/skipped counts, conflicts, promotions/inversions, and per-step reasoning to keep the pipeline audit-friendly.
+
+### Deterministic curation & evidence
+
+- **Dedup + conflict hints**: content hashes and `jaccardSimilarity` prevent zombies; `detectConflicts` flags negation/scope collisions before merging.
+- **Evidence-based gating**: `evidenceCountGate` tallies cass snippets for success/failure signals; ambiguous rules get downgraded to draft instead of rejected silently.
+- **LLM is optional**: validator only runs after evidence gate; `curatePlaybook` is 100% deterministic and logs every decision for replayability.
+- **Semantic classification**: `category`, `kind`, `type`, `scope`, and `tags` combine to route bullets to the right audiences (e.g., framework-specific vs workflow rules).
+
+### Confidence decay (scoring)
+
+- `scoring.getDecayedCounts` applies a 90-day half-life and a 4× harmful multiplier by default.
+- Promotion/demotion: `checkForPromotion`/`checkForDemotion` shift maturity as feedback arrives; stale bullets are pruned or inverted when harmful feedback dominates.
+- Context ranking: `getEffectiveScore` feeds into context relevance so fresh, validated rules surface first.
 
 ## 🔬 Algorithms & Scoring
 
