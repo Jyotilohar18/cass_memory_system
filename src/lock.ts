@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { expandPath } from "./utils.js";
+import { expandPath } from "./path-utils.js";
 
 /** Maximum age in milliseconds for a lock file before it's considered stale */
 const STALE_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
