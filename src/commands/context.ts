@@ -195,11 +195,6 @@ export async function generateContextResult(
   return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
 }
 
-import { loadConfig, getSanitizeConfig } from "../config.js";
-import { sanitize } from "../sanitize.js";
-
-// ... existing imports ...
-
 async function appendContextLog(entry: {
   task: string;
   ruleIds: string[];
