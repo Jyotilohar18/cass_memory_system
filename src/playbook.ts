@@ -337,6 +337,7 @@ export function addBullet(
     isNegative: data.isNegative || false,
     scope: data.scope || "global",
     workspace: data.workspace,
+    source: data.source || "learned",
     tags: data.tags || [],
     searchPointer: data.searchPointer,
     state: "draft",

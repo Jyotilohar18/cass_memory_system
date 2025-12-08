@@ -32,6 +32,9 @@ export const BulletKindEnum = z.enum([
 ]);
 export type BulletKind = z.infer<typeof BulletKindEnum>;
 
+export const BulletSourceEnum = z.enum(["learned", "community", "manual", "custom"]);
+export type BulletSource = z.infer<typeof BulletSourceEnum>;
+
 export const BulletStateEnum = z.enum(["draft", "active", "retired"]);
 export type BulletState = z.infer<typeof BulletStateEnum>;
 
@@ -66,6 +69,7 @@ export const PlaybookBulletSchema = z.object({
   workspace: z.string().optional(),
   category: z.string(),
   content: z.string(),
+  source: BulletSourceEnum.default("learned"),
   searchPointer: z.string().optional(),
   type: BulletTypeEnum.default("rule"),
   isNegative: z.boolean().default(false),
