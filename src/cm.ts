@@ -18,6 +18,7 @@ import { startersCommand } from "./commands/starters.js";
 import { quickstartCommand } from "./commands/quickstart.js";
 import { topCommand } from "./commands/top.js";
 import { staleCommand } from "./commands/stale.js";
+import { whyCommand } from "./commands/why.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -128,6 +129,14 @@ program.command("stale")
   .option("--scope <scope>", "Filter by scope (global, workspace, all)")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await staleCommand(opts));
+
+// --- Why ---
+program.command("why")
+  .description("Show bullet origin evidence and reasoning")
+  .argument("<bulletId>", "ID of the bullet to explain")
+  .option("--verbose", "Show full details including all sessions")
+  .option("--json", "Output JSON")
+  .action(async (id: string, opts: any) => await whyCommand(id, opts));
 
 // --- Usage ---
 program.command("usage")
