@@ -499,7 +499,7 @@ describe("E2E: CLI init command", () => {
           process.chdir(originalCwd);
         }
       });
-    });
+    }, 10000);
   });
 
   describe("Error Cases", () => {

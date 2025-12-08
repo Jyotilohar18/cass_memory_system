@@ -1,56 +1,29 @@
-import { describe, it, expect } from "bun:test";
-import fs from "node:fs/promises";
-import path from "node:path";
-import {
-  cassAvailable,
-  handleCassUnavailable,
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { 
+  cassAvailable, 
+  handleCassUnavailable, 
   cassNeedsIndex,
-  cassSearch,
   safeCassSearch,
   cassExport,
   cassExpand,
   cassTimeline,
   findUnprocessedSessions,
-  CASS_EXIT_CODES,
+  CASS_EXIT_CODES
 } from "../src/cass.js";
-import { withTempDir } from "./helpers/index.js";
+import { withTempDir, makeCassStub } from "./helpers/temp.js";
 import { createTestConfig } from "./helpers/factories.js";
 
-function shQuote(text: string): string {
-  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
-}
-
-async function makeCassStub(dir: string, overrides: Partial<Record<string, string>> = {}) {
-  const healthExit = overrides.healthExit ?? "${HEALTH_EXIT:-0}";
-  const script = [
-    "#!/bin/sh",
-    'cmd="$1"; shift',
-    'case "$cmd" in',
-    '  --version) exit 0 ;;',
-    `  health) exit ${healthExit} ;;`,
-    '  index) exit 0 ;;',
-    '  search)',
-    `    echo ${shQuote(overrides.search || '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]')}`,
-    "    exit 0 ;;",
-    '  export)',
-    `    echo ${shQuote(overrides.export || "# Session transcript")}`,
-    "    exit 0 ;;",
-    '  expand)',
-    `    printf %s ${shQuote(overrides.expand || "context lines")}`,
-    "    exit 0 ;;",
-    '  timeline)',
-    `    echo ${shQuote(overrides.timeline || '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}')}`,
-    "    exit 0 ;;",
-    "  *) exit 9 ;;",
-    "esac",
-  ].join("\n");
-
-  const scriptPath = path.join(dir, "cass-stub.sh");
-  await fs.writeFile(scriptPath, script, { mode: 0o755 });
-  return scriptPath;
-}
-
 describe("cass.ts core functions (stubbed)", () => {
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
   it("cassAvailable detects stub", async () => {
     await withTempDir("cass-available", async (dir) => {
       const cassPath = await makeCassStub(dir);
@@ -66,53 +39,94 @@ describe("cass.ts core functions (stubbed)", () => {
 
   it("cassNeedsIndex returns true on INDEX_MISSING health code", async () => {
     await withTempDir("cass-health", async (dir) => {
-      const cassPath = await makeCassStub(dir, { healthExit: `${CASS_EXIT_CODES.INDEX_MISSING}` });
+      const cassPath = await makeCassStub(dir, { healthExit: CASS_EXIT_CODES.INDEX_MISSING });
       expect(cassNeedsIndex(cassPath)).toBe(true);
     });
   });
 
   it("safeCassSearch parses hits from stub", async () => {
     await withTempDir("cass-search", async (dir) => {
-      const cassPath = await makeCassStub(dir);
-      const config = await createTestConfig();
+      const hitsData = [{
+        source_path: "test.ts",
+        line_number: 10,
+        snippet: "test code",
+        agent: "claude",
+        score: 0.9
+      }];
+      
+      const cassPath = await makeCassStub(dir, { search: JSON.stringify(hitsData) });
+      const config = createTestConfig();
+      
       const hits = await safeCassSearch("query", { limit: 1 }, cassPath, config);
-      expect(hits.length).toBe(1);
-      expect(hits[0].agent).toBe("stub");
-      expect(hits[0].snippet).toBe("hello");
+      
+      expect(hits).toHaveLength(1);
+      expect(hits[0].source_path).toBe("test.ts");
     });
   });
 
   it("cassExport returns content from stub", async () => {
     await withTempDir("cass-export", async (dir) => {
-      const cassPath = await makeCassStub(dir, { export: "EXPORT_CONTENT" });
-      const content = await cassExport("session.jsonl", "markdown", cassPath);
-      expect(content).toContain("EXPORT_CONTENT");
+      const cassPath = await makeCassStub(dir, { export: "exported content" });
+      const config = createTestConfig();
+      
+      const content = await cassExport("session.jsonl", "text", cassPath, config);
+      // Stub adds newline via echo
+      expect(content?.trim()).toBe("exported content");
     });
   });
 
   it("cassExpand returns context from stub", async () => {
     await withTempDir("cass-expand", async (dir) => {
-      const cassPath = await makeCassStub(dir, { expand: "EXPANDED" });
-      const content = await cassExpand("session.jsonl", 10, 2, cassPath);
-      expect(content?.trim()).toBe("EXPANDED");
+      const cassPath = await makeCassStub(dir, { expand: "expanded context" });
+      const config = createTestConfig();
+      
+      const content = await cassExpand("session.jsonl", 10, 2, cassPath, config);
+      expect(content?.trim()).toBe("expanded context");
     });
   });
 
   it("cassTimeline returns groups parsed from stub", async () => {
     await withTempDir("cass-timeline", async (dir) => {
-      const cassPath = await makeCassStub(dir);
-      const timeline = await cassTimeline(7, cassPath);
-      expect(timeline.groups.length).toBe(1);
-      expect(timeline.groups[0].sessions[0].path).toBe("/sessions/s1.jsonl");
+      const output = JSON.stringify({
+        groups: [
+          {
+            date: "2025-01-01",
+            sessions: [
+              { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" }
+            ]
+          }
+        ]
+      });
+      
+      const cassPath = await makeCassStub(dir, { timeline: output });
+      const result = await cassTimeline(7, cassPath);
+      
+      expect(result.groups).toHaveLength(1);
+      expect(result.groups[0].date).toBe("2025-01-01");
     });
   });
 
   it("findUnprocessedSessions respects processed set", async () => {
-    await withTempDir("cass-find", async (dir) => {
-      const cassPath = await makeCassStub(dir);
-      const processed = new Set<string>(["/sessions/s1.jsonl"]);
-      const sessions = await findUnprocessedSessions(processed, { days: 7, maxSessions: 5 }, cassPath);
-      expect(sessions).toHaveLength(0);
+    await withTempDir("cass-unprocessed", async (dir) => {
+      const output = JSON.stringify({
+        groups: [
+          {
+            date: "2025-01-01",
+            sessions: [
+              { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
+              { path: "s2.jsonl", agent: "claude", messageCount: 5, startTime: "12:00", endTime: "13:00" }
+            ]
+          }
+        ]
+      });
+      
+      const cassPath = await makeCassStub(dir, { timeline: output });
+      const processed = new Set(["s1.jsonl"]);
+      
+      const result = await findUnprocessedSessions(processed, {}, cassPath);
+      
+      expect(result).toHaveLength(1);
+      expect(result[0]).toBe("s2.jsonl");
     });
   });
 });

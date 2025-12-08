@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -23,6 +23,68 @@ export async function writeFileInDir(dir: string, relative: string, contents: st
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, contents);
   return full;
+}
+
+/**
+ * Creates a dummy executable file that can be used as a stub for CLI tools.
+ * The stub will print the provided output to stdout when executed.
+ *
+ * @param dir - Directory to create the stub in
+ * @param exitCode - Exit code the stub should return (default: 0)
+ * @param stdout - Output to print to stdout (default: "")
+ * @param name - Name of the executable (default: "cass")
+ * @returns Absolute path to the stub executable
+ */
+type CassStubOptions = {
+  exitCode?: number;
+  healthExit?: number;
+  indexExit?: number;
+  search?: string;
+  export?: string;
+  expand?: string;
+  timeline?: string;
+};
+
+function shQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+export async function makeCassStub(dir: string, opts: CassStubOptions = {}, name = "cass"): Promise<string> {
+  const stubPath = path.join(dir, name);
+  const exitCode = opts.exitCode ?? 0;
+  const healthExit = opts.healthExit ?? exitCode;
+  const indexExit = opts.indexExit ?? exitCode;
+  const searchOut = opts.search ?? '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]';
+  const exportOut = opts.export ?? "# Session transcript";
+  const expandOut = opts.expand ?? "context lines";
+  const timelineOut = opts.timeline ?? '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}';
+
+  const script = [
+    "#!/bin/sh",
+    'cmd="$1"; shift',
+    'case "$cmd" in',
+    '  --version) exit 0 ;;',
+    `  health) exit ${healthExit} ;;`,
+    `  index) exit ${indexExit} ;;`,
+    '  search)',
+    `    echo ${shQuote(searchOut)}`,
+    `    exit ${exitCode} ;;`,
+    '  export)',
+    `    echo ${shQuote(exportOut)}`,
+    `    exit ${exitCode} ;;`,
+    '  expand)',
+    `    echo ${shQuote(expandOut)}`,
+    `    exit ${exitCode} ;;`,
+    '  timeline)',
+    `    echo ${shQuote(timelineOut)}`,
+    `    exit ${exitCode} ;;`,
+    `  *) exit ${exitCode} ;;`,
+    "esac",
+  ].join("\n");
+
+  await writeFile(stubPath, script);
+  await chmod(stubPath, 0o755);
+  return stubPath;
 }
 
 /**
