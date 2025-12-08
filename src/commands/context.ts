@@ -349,7 +349,9 @@ export async function contextCommand(
         console.log("");
       });
     } else {
-      console.log(chalk.gray("(No relevant history found)\n"));
+      // Zero-config friendly message
+      console.log(chalk.gray("(No relevant history found)"));
+      console.log(chalk.gray(`  💡 Use Claude Code, Cursor, or Codex to build session history.\n`));
     }
 
     if (warnings.length > 0) {
