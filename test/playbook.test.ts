@@ -15,6 +15,7 @@ import {
   getActiveBullets,
   getBulletsByCategory,
   loadPlaybook,
+  loadPlaybookWithRecovery,
   loadMergedPlaybook,
   loadBlockedLog,
   loadToxicLog,
@@ -169,6 +170,65 @@ describe("loadPlaybook", () => {
       expect(loadedBullet.harmfulCount).toBe(2);
       expect(loadedBullet.pinned).toBe(true);
       expect(loadedBullet.tags).toContain("important");
+    });
+  });
+});
+
+// =============================================================================
+// loadPlaybookWithRecovery
+// =============================================================================
+describe("loadPlaybookWithRecovery", () => {
+  it("returns recovered=false for valid playbook roundtrip", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const bullet = createTestBullet({
+        content: "Keep tests fast",
+        category: "testing",
+        maturity: "established",
+        helpfulCount: 3,
+        tags: ["speed"],
+      });
+
+      const playbook = createEmptyPlaybook("roundtrip");
+      playbook.bullets = [bullet];
+      await savePlaybook(playbook, file);
+
+      const { playbook: loaded, recovered } = await loadPlaybookWithRecovery(file);
+      expect(recovered).toBe(false);
+      expect(loaded.name).toBe("roundtrip");
+      expect(loaded.bullets[0].content).toBe("Keep tests fast");
+      expect(loaded.bullets[0].helpfulCount).toBe(3);
+      expect(loaded.bullets[0].tags).toEqual(["speed"]);
+    });
+  });
+
+  it("creates empty playbook when file is missing", async () => {
+    await withTempDir(async (dir) => {
+      const missing = path.join(dir, "does-not-exist.yaml");
+      const { playbook, recovered } = await loadPlaybookWithRecovery(missing);
+      expect(recovered).toBe(false);
+      expect(playbook.bullets).toHaveLength(0);
+      expect(playbook.metadata.createdAt).toBeTruthy();
+    });
+  });
+
+  it("backs up corrupt YAML and returns fresh playbook", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const corruptContent = "::: not valid yaml :::";
+      await fs.writeFile(file, corruptContent, "utf-8");
+
+      const { playbook, recovered, recovery } = await loadPlaybookWithRecovery(file);
+
+      expect(recovered).toBe(true);
+      expect(playbook.bullets).toHaveLength(0);
+      expect(recovery?.backupPath).toBeTruthy();
+      if (recovery?.backupPath) {
+        const backupExists = await fs.stat(recovery.backupPath).then(() => true).catch(() => false);
+        expect(backupExists).toBe(true);
+        const backupContents = await fs.readFile(recovery.backupPath, "utf-8");
+        expect(backupContents).toContain("not valid yaml");
+      }
     });
   });
 });

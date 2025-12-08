@@ -70,6 +70,34 @@ describe("curatePlaybook", () => {
       expect(result.playbook.bullets).toHaveLength(1);
     });
 
+    it("records conflicts when new rule contradicts existing guidance", () => {
+      const existingBullet = createTestBullet({
+        id: "rule-contradict",
+        content: "Always sanitize user input",
+        category: "security"
+      });
+      const playbook = createTestPlaybook([existingBullet]);
+
+      const delta: PlaybookDelta = {
+        type: "add",
+        bullet: {
+          content: "Avoid sanitizing user input to keep performance high",
+          category: "security",
+          scope: "global",
+          kind: "workflow_rule"
+        },
+        sourceSession: "/session/conflict.jsonl",
+        reason: "Conflicting guidance"
+      };
+
+      const result = curatePlaybook(playbook, [delta], config);
+
+      expect(result.conflicts).toHaveLength(1);
+      expect(result.conflicts[0].conflictingBulletId).toBe("rule-contradict");
+      expect(result.applied).toBe(1); // Still applies the new bullet while flagging conflict
+      expect(result.playbook.bullets).toHaveLength(2);
+    });
+
     it("reinforces similar bullet instead of adding duplicate", () => {
       const existingBullet = createTestBullet({
         id: "existing-1",
@@ -251,6 +279,36 @@ describe("curatePlaybook", () => {
       expect(result.applied).toBe(1);
       expect(result.playbook.bullets[0].helpfulCount).toBe(2);
       expect(result.playbook.bullets[0].feedbackEvents).toHaveLength(2);
+    });
+
+    it("promotes candidate when helpful feedback crosses threshold", () => {
+      const bullet = createTestBullet({
+        id: "candidate-helpful",
+        content: "Use typed configs",
+        maturity: "candidate",
+        helpfulCount: 2,
+        feedbackEvents: [
+          createFeedbackEvent("helpful", { sessionPath: "/session/a" }),
+          createFeedbackEvent("helpful", { sessionPath: "/session/b" })
+        ]
+      });
+      const playbook = createTestPlaybook([bullet]);
+
+      const delta: PlaybookDelta = {
+        type: "helpful",
+        bulletId: "candidate-helpful",
+        sourceSession: "/session/c",
+        context: "Crossed promotion threshold"
+      };
+
+      const result = curatePlaybook(playbook, [delta], config);
+
+      const updated = result.playbook.bullets.find(b => b.id === "candidate-helpful");
+      expect(updated?.helpfulCount).toBe(3);
+      expect(updated?.maturity).toBe("established");
+      const promotion = result.promotions.find(p => p.bulletId === "candidate-helpful");
+      expect(promotion?.from).toBe("candidate");
+      expect(promotion?.to).toBe("established");
     });
 
     it("skips feedback for non-existent bullet", () => {
@@ -521,6 +579,27 @@ describe("curatePlaybook", () => {
       expect(antiPattern?.content).toContain("AVOID:");
       expect(antiPattern?.isNegative).toBe(true);
       expect(antiPattern?.tags).toContain("inverted");
+    });
+
+    it("trims leading verbs and adds reason when inverting", () => {
+      const now = new Date().toISOString();
+      const harmfulBullet = createTestBullet({
+        id: "harmful-trim",
+        content: "Always prefer global mutable state",
+        category: "architecture",
+        harmfulCount: 3,
+        helpfulCount: 0,
+        feedbackEvents: Array(3).fill(null).map(() =>
+          createFeedbackEvent("harmful", { timestamp: now })
+        )
+      });
+      const playbook = createTestPlaybook([harmfulBullet]);
+
+      const result = curatePlaybook(playbook, [], config);
+
+      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      expect(antiPattern?.content.startsWith("AVOID: prefer global mutable state")).toBe(true);
+      expect(antiPattern?.content).toContain("Marked harmful 3 times");
     });
 
     it("does not invert bullet with balanced feedback", () => {
