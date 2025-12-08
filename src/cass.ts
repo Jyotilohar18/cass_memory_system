@@ -319,6 +319,24 @@ export async function safeCassSearch(
     }
     
     error(`Cass search failed: ${err.message}`);
+
+    // Fallback: if force flag set, attempt a best-effort sync call and parse whatever stdout we get
+    if (options.force) {
+      try {
+        const alt = spawnSync(cassPath, ["search", query, "--robot"], { encoding: "utf-8" });
+        const text = alt.stdout || "";
+        if (text.trim()) {
+          const parsed = JSON.parse(text);
+          const hitsArr = Array.isArray(parsed) ? parsed : [parsed];
+          return hitsArr.map((hit: any) => ({
+            ...CassHitSchema.parse(hit),
+            snippet: sanitize(hit.snippet, compiledConfig)
+          }));
+        }
+      } catch (fallbackErr: any) {
+        error(`Cass search fallback failed: ${fallbackErr.message}`);
+      }
+    }
     return [];
   }
 }
