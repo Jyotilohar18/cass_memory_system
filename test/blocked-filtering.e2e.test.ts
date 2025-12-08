@@ -15,6 +15,7 @@ import {
   loadBlockedLog,
   appendBlockedLog,
   BlockedEntry,
+  getActiveBullets,
 } from "../src/playbook.js";
 import { jaccardSimilarity } from "../src/utils.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
@@ -89,10 +90,16 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const config = createTestConfig({ playbookPath: globalPath });
         const merged = await loadMergedPlaybook(config);
 
-        // eval bullet should be filtered out
-        const contents = merged.bullets.map((b) => b.content);
-        expect(contents).not.toContain("Never use eval()");
-        expect(contents).toContain("Always validate inputs");
+        // Eval bullet should be deprecated (blocked)
+        const evalBullet = merged.bullets.find(b => b.content === "Never use eval()");
+        expect(evalBullet).toBeDefined();
+        expect(evalBullet?.deprecated).toBe(true);
+        expect(evalBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
+
+        // But getActiveBullets should exclude it
+        const activeContents = getActiveBullets(merged).map(b => b.content);
+        expect(activeContents).not.toContain("Never use eval()");
+        expect(activeContents).toContain("Always validate inputs");
       } finally {
         process.env.HOME = originalHome;
         process.chdir(originalCwd);
@@ -134,10 +141,13 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const config = createTestConfig({ playbookPath: globalPath });
         const merged = await loadMergedPlaybook(config);
 
-        // Should be filtered due to hash normalization
-        const contents = merged.bullets.map((b) => b.content.toLowerCase().trim());
-        expect(contents).not.toContain("never use var");
-        expect(merged.bullets.length).toBe(1);
+        // Should be deprecated due to hash normalization
+        const activeContents = getActiveBullets(merged).map(b => b.content.toLowerCase().trim());
+        expect(activeContents).not.toContain("never use var");
+        
+        const blockedBullet = merged.bullets.find(b => b.id === "b-var");
+        expect(blockedBullet?.deprecated).toBe(true);
+        expect(blockedBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
         process.env.HOME = originalHome;
         process.chdir(originalCwd);
@@ -188,10 +198,14 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const config = createTestConfig({ playbookPath: globalPath });
         const merged = await loadMergedPlaybook(config);
 
-        // Similar content should be blocked
-        const contents = merged.bullets.map((b) => b.content);
-        expect(contents).not.toContain(similarContent);
-        expect(contents).toContain("Use proper error handling");
+        // Similar content should be blocked (deprecated)
+        const activeContents = getActiveBullets(merged).map(b => b.content);
+        expect(activeContents).not.toContain(similarContent);
+        expect(activeContents).toContain("Use proper error handling");
+
+        const blockedBullet = merged.bullets.find(b => b.id === "b-similar");
+        expect(blockedBullet?.deprecated).toBe(true);
+        expect(blockedBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
         process.env.HOME = originalHome;
         process.chdir(originalCwd);
@@ -307,11 +321,15 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const config = createTestConfig({ playbookPath: globalPath });
         const merged = await loadMergedPlaybook(config);
 
-        const contents = merged.bullets.map((b) => b.content);
-        expect(contents).not.toContain("Global rule blocked by global");
-        expect(contents).not.toContain("Global rule blocked by repo");
-        expect(contents).toContain("Global rule kept");
-        expect(contents).toContain("Repo rule kept");
+        const activeContents = getActiveBullets(merged).map((b) => b.content);
+        expect(activeContents).not.toContain("Global rule blocked by global");
+        expect(activeContents).not.toContain("Global rule blocked by repo");
+        expect(activeContents).toContain("Global rule kept");
+        expect(activeContents).toContain("Repo rule kept");
+        
+        const b1 = merged.bullets.find(b => b.id === "g-1");
+        expect(b1?.deprecated).toBe(true);
+        expect(b1?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
         process.env.HOME = originalHome;
         process.chdir(originalCwd);

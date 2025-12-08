@@ -319,10 +319,7 @@ describe("E2E: CLI init command", () => {
           const current = await readFile(playbookPath, "utf-8");
           const currentPlaybook = yaml.parse(current);
           const warningOutput = capture2.logs.join("\n");
-          expect(
-            warningOutput.includes("Repo-level cass-memory already initialized") ||
-            warningOutput.includes("Repo already has .cass/ directory")
-          ).toBe(true);
+          expect(warningOutput).toContain("Repo already has .cass/ directory");
         } finally {
           process.chdir(originalCwd);
         }
