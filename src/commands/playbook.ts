@@ -43,17 +43,12 @@ export async function playbookCommand(
         const { loadPlaybook } = await import("../playbook.js");
         const playbook = await loadPlaybook(config.playbookPath);
         
-        const bullet = addBullet(playbook, {
-          content,
-          category: flags.category || "general",
-          type: "rule",
-          scope: "global",
-          kind: "workflow_rule",
-          tags: [],
-          workspace: undefined,
-          searchPointer: undefined,
-          isNegative: false
-        }, "manual-cli"); // removed config.defaultDecayHalfLife arg as it's optional and addBullet signature handles defaults
+      const bullet = addBullet(playbook, {
+        content,
+        category: options.category || "general",
+        scope: "global",
+        kind: "workflow_rule"
+      }, "manual-cli", config.scoring.decayHalfLifeDays);
 
         await savePlaybook(playbook, config.playbookPath);
 

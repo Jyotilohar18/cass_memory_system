@@ -182,7 +182,7 @@ export function addBullet(
   sourceSession: string,
   halfLifeDays: number = 90
 ): PlaybookBullet {
-  const agent = extractAgent(sourceSession); 
+  const agent = extractAgentFromPath(sourceSession); 
 
   const newBullet: PlaybookBullet = {
     id: generateBulletId(),

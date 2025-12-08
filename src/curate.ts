@@ -84,7 +84,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     harmfulCount: 0,
     deprecated: false,
     pinned: false,
-    confidenceDecayHalfLifeDays: halfLife 
+    confidenceDecayHalfLifeDays: config.scoring.decayHalfLifeDays 
   };
 }
 
