@@ -1143,7 +1143,7 @@ export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; fr
     const { promisify } = await import("node:util");
     const execFileAsync = promisify(execFileCb);
 
-    const { stdout } = await execFileAsync("df", ["-h", expanded]);
+    const { stdout } = await execFileAsync("df", ["-hP", expanded]);
 
     // Parse df output - last line, 4th column (Available space)
     const lines = stdout.trim().split("\n");
