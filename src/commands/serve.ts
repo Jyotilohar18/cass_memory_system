@@ -1,9 +1,9 @@
 import http from "node:http";
-import path from "node:path";
-import fs from "node:fs/promises";
 import { generateContextResult } from "./context.js";
 import { recordFeedback } from "./mark.js";
-import { ensureDir, expandPath, log, warn, error as logError } from "../utils.js";
+import { recordOutcome } from "../outcome.js";
+import { loadConfig } from "../config.js";
+import { log, warn, error as logError } from "../utils.js";
 
 type JsonRpcRequest = {
   jsonrpc?: string;
@@ -64,26 +64,6 @@ const TOOL_DEFS = [
     }
   }
 ];
-
-async function recordOutcome(payload: {
-  sessionId?: string;
-  outcome: string;
-  rulesUsed?: string[];
-  notes?: string;
-  task?: string;
-  durationSec?: number;
-}) {
-  const dir = expandPath("~/.cass-memory/outcomes");
-  await ensureDir(dir);
-  const entry = {
-    ...payload,
-    rulesUsed: payload.rulesUsed || [],
-    recordedAt: new Date().toISOString()
-  };
-  const target = path.join(dir, "outcomes.jsonl");
-  await fs.appendFile(target, JSON.stringify(entry) + "\n", "utf-8");
-  return { recorded: true, path: target };
-}
 
 async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
