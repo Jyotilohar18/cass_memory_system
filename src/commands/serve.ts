@@ -14,7 +14,9 @@ import { curatePlaybook } from "../curate.js";
 import { ProcessedLog, getProcessedLogPath } from "../tracking.js";
 import { expandPath, now, fileExists } from "../utils.js";
 import { withLock } from "../lock.js";
-import type { PlaybookDelta } from "../types.js";
+import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
+import { jaccardSimilarity } from "../utils.js";
+import type { PlaybookDelta, PlaybookBullet } from "../types.js";
 
 // Simple per-tool argument validation helper to reduce drift.
 function assertArgs(args: any, required: Record<string, string>) {
@@ -135,6 +137,12 @@ const RESOURCE_DEFS = [
   {
     uri: "cm://outcomes",
     description: "Recent recorded outcomes"
+  },
+  {
+    uri: "cm://stats",
+    name: "Playbook Stats",
+    description: "Playbook health metrics",
+    mimeType: "application/json"
   }
 ];
 
@@ -230,6 +238,132 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       return result;
     }
+    case "memory_reflect": {
+      const t0 = performance.now();
+      const config = await loadConfig();
+
+      const days = typeof args?.days === "number" ? args.days : 7;
+      const maxSessions = typeof args?.maxSessions === "number" ? args.maxSessions : 20;
+      const dryRun = Boolean(args?.dryRun);
+      const workspace = args?.workspace;
+      const singleSession = args?.session;
+
+      const globalPath = expandPath(config.playbookPath);
+      const repoPath = expandPath(".cass/playbook.yaml");
+      const targetPlaybookPath = (await fileExists(repoPath)) ? repoPath : globalPath;
+      const logPath = expandPath(getProcessedLogPath(workspace));
+
+      // Use lock to prevent concurrent reflection
+      const reflectResult = await withLock(targetPlaybookPath, async () => {
+        const processedLog = new ProcessedLog(logPath);
+        await processedLog.load();
+
+        const initialPlaybook = await loadMergedPlaybook(config);
+
+        // Find sessions to process
+        let sessions: string[] = [];
+        if (singleSession) {
+          sessions = [singleSession];
+        } else {
+          sessions = await findUnprocessedSessions(
+            processedLog.getProcessedPaths(),
+            { days, maxSessions },
+            config.cassPath
+          );
+        }
+
+        const unprocessed = sessions.filter(s => !processedLog.has(s));
+
+        if (unprocessed.length === 0) {
+          return {
+            sessionsProcessed: 0,
+            deltasGenerated: 0,
+            deltasApplied: 0,
+            message: "No new sessions to reflect on"
+          };
+        }
+
+        const allDeltas: PlaybookDelta[] = [];
+        const processedSessions: string[] = [];
+
+        // Process each session
+        for (const sessionPath of unprocessed) {
+          try {
+            const diary = await generateDiary(sessionPath, config);
+            const deltas = await reflectOnSession(diary, initialPlaybook, config);
+
+            // Validate each delta
+            const validatedDeltas: PlaybookDelta[] = [];
+            for (const delta of deltas) {
+              const validation = await validateDelta(delta, config);
+              if (validation.valid) {
+                validatedDeltas.push(delta);
+              }
+            }
+
+            if (validatedDeltas.length > 0) {
+              allDeltas.push(...validatedDeltas);
+            }
+
+            // Track processed session
+            processedLog.add({
+              sessionPath,
+              processedAt: now(),
+              diaryId: diary.id,
+              deltasGenerated: validatedDeltas.length
+            });
+            processedSessions.push(sessionPath);
+
+          } catch (err: any) {
+            log(`Failed to process ${sessionPath}: ${err.message}`, true);
+          }
+        }
+
+        // In dry-run mode, return deltas without applying
+        if (dryRun) {
+          return {
+            sessionsProcessed: processedSessions.length,
+            deltasGenerated: allDeltas.length,
+            deltasApplied: 0,
+            dryRun: true,
+            proposedDeltas: allDeltas.map(d => ({
+              type: d.type,
+              ...(d.type === "add" ? { content: d.bullet?.content } : {}),
+              ...(d.type !== "add" && "bulletId" in d ? { bulletId: d.bulletId } : {})
+            })),
+            message: `Would apply ${allDeltas.length} changes from ${processedSessions.length} sessions`
+          };
+        }
+
+        // Apply deltas if we have any
+        if (allDeltas.length > 0) {
+          const freshPlaybook = await loadPlaybook(targetPlaybookPath);
+          const curation = curatePlaybook(freshPlaybook, allDeltas, config, initialPlaybook);
+          await savePlaybook(curation.playbook, targetPlaybookPath);
+          await processedLog.save();
+
+          return {
+            sessionsProcessed: processedSessions.length,
+            deltasGenerated: allDeltas.length,
+            deltasApplied: curation.applied,
+            skipped: curation.skipped,
+            inversions: curation.inversions.length,
+            message: `Applied ${curation.applied} changes from ${processedSessions.length} sessions`
+          };
+        }
+
+        await processedLog.save();
+        return {
+          sessionsProcessed: processedSessions.length,
+          deltasGenerated: 0,
+          deltasApplied: 0,
+          message: "No new insights found"
+        };
+      });
+
+      maybeProfile("memory_reflect", t0);
+      return reflectResult;
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -253,6 +387,84 @@ async function handleResourceRead(uri: string): Promise<any> {
     case "cm://outcomes": {
       const outcomes = await loadOutcomes(config, 50);
       return { uri, mimeType: "application/json", data: outcomes };
+    }
+    case "cm://stats": {
+      const playbook = await loadMergedPlaybook(config);
+      const bullets = playbook.bullets;
+      const activeBullets = getActiveBullets(playbook);
+
+      // Score distribution
+      const distribution = analyzeScoreDistribution(activeBullets, config);
+
+      // Count by scope, state, kind
+      const countBy = <T>(items: T[], keyFn: (item: T) => string): Record<string, number> =>
+        items.reduce<Record<string, number>>((acc, item) => {
+          const key = keyFn(item);
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+
+      const byScope = countBy(bullets, (b: PlaybookBullet) => b.scope ?? "unknown");
+      const byState = countBy(bullets, (b: PlaybookBullet) => b.state ?? "unknown");
+      const byKind = countBy(bullets, (b: PlaybookBullet) => b.kind ?? "unknown");
+
+      // Compute scores and rankings
+      const scores = bullets.map((b) => ({
+        bullet: b,
+        score: getEffectiveScore(b, config)
+      }));
+
+      const topPerformers = scores
+        .filter((s) => !isNaN(s.score))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .map(({ bullet, score }) => ({
+          id: bullet.id,
+          content: bullet.content.slice(0, 100),
+          score: Number(score.toFixed(2)),
+          helpfulCount: bullet.helpfulCount || 0
+        }));
+
+      const atRisk = scores.filter((s) => s.score < 0).map((s) => ({
+        id: s.bullet.id,
+        content: s.bullet.content.slice(0, 100),
+        score: Number(s.score.toFixed(2))
+      }));
+
+      const staleBullets = bullets.filter((b) => isStale(b, 90));
+
+      // Find merge candidates (high Jaccard similarity)
+      const mergeCandidates: Array<{ a: string; b: string; similarity: number }> = [];
+      for (let i = 0; i < Math.min(bullets.length, 50); i++) {
+        for (let j = i + 1; j < Math.min(bullets.length, 50); j++) {
+          const sim = jaccardSimilarity(bullets[i].content, bullets[j].content);
+          if (sim >= 0.8) {
+            mergeCandidates.push({
+              a: bullets[i].id,
+              b: bullets[j].id,
+              similarity: Number(sim.toFixed(2))
+            });
+          }
+          if (mergeCandidates.length >= 5) break;
+        }
+        if (mergeCandidates.length >= 5) break;
+      }
+
+      const stats = {
+        total: bullets.length,
+        active: activeBullets.length,
+        byScope,
+        byState,
+        byKind,
+        scoreDistribution: distribution,
+        topPerformers,
+        atRisk,
+        atRiskCount: atRisk.length,
+        staleCount: staleBullets.length,
+        mergeCandidates
+      };
+
+      return { uri, mimeType: "application/json", data: stats };
     }
     default:
       throw new Error(`Unknown resource: ${uri}`);
