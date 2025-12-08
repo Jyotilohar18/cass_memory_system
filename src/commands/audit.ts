@@ -7,6 +7,16 @@ import chalk from "chalk";
 
 export async function auditCommand(flags: { days?: number; json?: boolean }) {
   const config = await loadConfig();
+  if (!config.apiKey) {
+    const message = "Audit requires LLM access (missing API key). Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or run with a provider configured in config.";
+    if (flags.json) {
+      console.log(JSON.stringify({ error: message, code: "missing_api_key" }, null, 2));
+    } else {
+      console.warn(message);
+    }
+    return;
+  }
+
   const playbook = await loadMergedPlaybook(config);
   
   // Get recent sessions
