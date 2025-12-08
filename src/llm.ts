@@ -1,11 +1,7 @@
-// src/llm.ts
-// LLM Provider Abstraction - Using Vercel AI SDK
-// Supports OpenAI, Anthropic, and Google providers with a unified interface
-
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateObject, type LanguageModel } from "ai";
+import { generateObject, type LanguageModel, type GenerateObjectResult } from "ai";
 import { z } from "zod";
 import type { Config, DiaryEntry } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
@@ -213,7 +209,7 @@ Consider:
 
 Respond with:
 {
-  "verdict": "ACCEPT" | "REJECT" | "REFINE" | "ACCEPT_WITH_CAUTION",
+  "verdict": "ACCEPT" | "REJECT" | "REFINE",
   "confidence": number,  // 0.0-1.0
   "reason": string,
   "suggestedRefinement": string | null,  // Suggested improvement if partially valid
@@ -302,6 +298,8 @@ export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
+  perOperationTimeoutMs: 120_000, // 2 minutes per operation
+  totalTimeoutMs: 300_000, // 5 minutes total ceiling
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
@@ -315,14 +313,49 @@ export const LLM_RETRY_CONFIG = {
   ]
 };
 
+/**
+ * Wrap a promise with a timeout.
+ * @throws Error with "timeout" in message if deadline exceeded
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then(result => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch(err => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 export async function llmWithRetry<T>(
   operation: () => Promise<T>,
   operationName: string
 ): Promise<T> {
+  const startTime = Date.now();
   let attempt = 0;
+
   while (true) {
+    // Check total time ceiling
+    const elapsed = Date.now() - startTime;
+    if (elapsed > LLM_RETRY_CONFIG.totalTimeoutMs) {
+      throw new Error(`${operationName} exceeded total timeout ceiling of ${LLM_RETRY_CONFIG.totalTimeoutMs}ms`);
+    }
+
     try {
-      return await operation();
+      // Wrap each operation with per-call timeout
+      return await withTimeout(
+        operation(),
+        LLM_RETRY_CONFIG.perOperationTimeoutMs,
+        operationName
+      );
     } catch (err: any) {
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
@@ -332,33 +365,37 @@ export async function llmWithRetry<T>(
         const statusMatch = err.statusCode?.toString().includes(e);
         return messageMatch || codeMatch || statusMatch;
       });
-      
+
       if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
         throw err;
       }
-      
+
       const delay = Math.min(
-        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), 
+        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
         LLM_RETRY_CONFIG.maxDelayMs
       );
-      
+
       console.warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
+// Explicitly type monitoredGenerateObject to return GenerateObjectResult<T>
 async function monitoredGenerateObject<T>(
   options: any,
   config: Config,
   context: string
-) {
+): Promise<GenerateObjectResult<T>> {
   const budgetCheck = await checkBudget(config);
   if (!budgetCheck.allowed) {
     throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
   }
 
-  const result = await generateObject(options);
+  const result = await generateObject({
+    ...options,
+    // Ensure schema is passed through if present in options, typically it is
+  }) as GenerateObjectResult<T>;
 
   if (result.usage) {
     const modelName = config.llm?.model ?? config.model;
@@ -398,15 +435,15 @@ export async function generateObjectSafe<T>(
 
       const temperature = attempt > 1 ? 0.35 : 0.3;
 
-      const { object } = await monitoredGenerateObject({
+      const result = await monitoredGenerateObject<T>({
         model,
         schema,
         prompt: enhancedPrompt,
         temperature
       }, config, "generateObjectSafe");
 
-      const validated = schema.parse(object);
-      return validated;
+      // result.object is typed as T now
+      return result.object;
     } catch (err: any) {
       lastError = err;
       if (attempt < maxAttempts) {
@@ -444,13 +481,13 @@ export async function extractDiary<T>(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await monitoredGenerateObject({
+    const result = await monitoredGenerateObject<T>({
       model,
       schema,
       prompt,
       temperature: 0.3,
     }, config, "extractDiary");
-    return object as T;
+    return result.object;
   }, "extractDiary");
 }
 
@@ -494,13 +531,13 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
   });
 
   return llmWithRetry(async () => {
-    const { object } = await monitoredGenerateObject({
+    const result = await monitoredGenerateObject<T>({
       model,
       schema,
       prompt,
       temperature: 0.5,
     }, config, "runReflector");
-    return object as T;
+    return result.object;
   }, "runReflector");
 }
 
@@ -514,7 +551,7 @@ export interface ValidatorResult {
 }
 
 const ValidatorOutputSchema = z.object({
-  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE', 'ACCEPT_WITH_CAUTION']),
+  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE']),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   evidence: z.object({
@@ -523,6 +560,9 @@ const ValidatorOutputSchema = z.object({
   }),
   suggestedRefinement: z.string().optional().nullable()
 });
+
+// Helper interface for ValidatorOutput
+type ValidatorOutput = z.infer<typeof ValidatorOutputSchema>;
 
 export async function runValidator(
   proposedRule: string,
@@ -545,16 +585,18 @@ export async function runValidator(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await monitoredGenerateObject({
+    const result = await monitoredGenerateObject<ValidatorOutput>({
       model,
       schema: ValidatorOutputSchema,
       prompt,
       temperature: 0.2,
     }, config, "runValidator");
 
+    const object = result.object;
+
     const mappedEvidence = [
-      ...object.evidence.supporting.map(s => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...object.evidence.contradicting.map(s => ({ sessionPath: "unknown", snippet: s, supports: false }))
+      ...object.evidence.supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
+      ...object.evidence.contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
     ];
 
     return {
@@ -591,13 +633,13 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await monitoredGenerateObject({
+    const result = await monitoredGenerateObject<{ briefing: string }> ({
       model,
       schema: z.object({ briefing: z.string() }),
       prompt,
       temperature: 0.3,
     }, config, "generateContext");
-    return object.briefing;
+    return result.object.briefing;
   }, "generateContext");
 }
 
@@ -624,13 +666,13 @@ Generate 3-5 diverse search queries to find relevant information:
 Make queries specific enough to be useful but broad enough to match variations.`;
 
   return llmWithRetry(async () => {
-    const { object } = await monitoredGenerateObject({
+    const result = await monitoredGenerateObject<{ queries: string[] }> ({
       model,
       schema: z.object({ queries: z.array(z.string()).max(5) }),
       prompt,
       temperature: 0.5,
     }, config, "generateSearchQueries");
-    return object.queries;
+    return result.object.queries;
   }, "generateSearchQueries");
 }
 
@@ -680,14 +722,14 @@ export async function llmWithFallback<T>(
     try {
       const llmModel = getModel({ provider, model });
 
-      const { object } = await monitoredGenerateObject({
+      const result = await monitoredGenerateObject<T>({
         model: llmModel,
         schema,
         prompt,
         temperature: 0.3,
       }, config, "llmWithFallback");
 
-      return object as T;
+      return result.object;
     } catch (err: any) {
       const errorMsg = err.message || String(err);
       errors.push({ provider, error: errorMsg });
