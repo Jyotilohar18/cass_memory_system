@@ -144,7 +144,7 @@ export async function validateDelta(
       phase: "add",
       action: "skipped",
       reason: `Non-add delta type: ${delta.type}`,
-      content: delta.type === "add" ? delta.bullet.content?.slice(0, 100) : undefined
+      content: undefined
     });
     return { valid: true, decisionLog };
   }

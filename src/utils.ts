@@ -1587,12 +1587,12 @@ export function scoreBulletRelevance(
   let score = 0;
   const contentLower = bulletContent.toLowerCase();
   const tagsLower = bulletTags.map(t => t.toLowerCase());
+  const normalizedKeywords = Array.from(new Set(keywords.map(k => k.toLowerCase())));
   
   // Tokenize once
   const contentTokens = new Set(tokenize(contentLower));
 
-  for (const keyword of keywords) {
-    const k = keyword.toLowerCase();
+  for (const k of normalizedKeywords) {
     
     // Exact match in token set (fast)
     if (contentTokens.has(k)) {
