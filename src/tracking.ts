@@ -353,16 +353,17 @@ export async function getUsageStats(): Promise<{
   let commandFailed = 0;
 
   for (const event of events) {
-    eventCounts[event.event]++;
+    if (!event || !event.event) continue;
+    eventCounts[event.event] = (eventCounts[event.event] || 0) + 1;
 
     if (event.event === "bullet_marked" && event.data) {
       if (event.data.feedback === "helpful") helpful++;
       else harmful++;
     }
 
-    if (event.event === "command_run" && event.data) {
+    if (event.event === "command_run" && event.data && typeof event.data === 'object') {
       commandTotal++;
-      if (event.data.success) commandSuccess++;
+      if ('success' in event.data && event.data.success) commandSuccess++;
       else commandFailed++;
     }
   }

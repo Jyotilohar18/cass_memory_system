@@ -50,7 +50,7 @@ fi
 exit 0
 `);
       const config = await loadConfig();
-      const hits = await safeCassSearch("anything", { limit: 1 }, cassPath, config);
+      const hits = await safeCassSearch("anything", { limit: 1, force: true }, cassPath, config);
 
       expect(hits.length).toBe(1);
       expect(hits[0].source_path).toBe("demo/session.jsonl");

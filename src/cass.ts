@@ -176,6 +176,11 @@ export interface CassSearchOptions {
   workspace?: string;
   fields?: string[];
   timeout?: number;
+  /**
+   * Skip the availability probe and attempt a search anyway.
+   * Useful for test stubs where cassAvailable can be flaky.
+   */
+  force?: boolean;
 }
 
 export async function cassSearch(
@@ -252,7 +257,9 @@ export async function safeCassSearch(
   cassPath = "cass",
   config?: Config
 ): Promise<CassHit[]> {
-  if (!cassAvailable(cassPath)) {
+  const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
+
+  if (!force && !cassAvailable(cassPath)) {
     log("cass not available, skipping search", true);
     return [];
   }

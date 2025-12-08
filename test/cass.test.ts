@@ -63,7 +63,7 @@ describe("cass.ts core functions (stubbed)", () => {
       const cassPath = await makeCassStub(dir, { search: JSON.stringify(hitsData) });
       const config = createTestConfig();
       
-      const hits = await safeCassSearch("query", { limit: 1 }, cassPath, config);
+      const hits = await safeCassSearch("query", { limit: 1, force: true }, cassPath, config);
       
       expect(hits).toHaveLength(1);
       expect(hits[0].source_path).toBe("test.ts");
