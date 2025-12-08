@@ -13,6 +13,10 @@ ARTIFACTS="$LOG_DIR/artifacts"
 mkdir -p "$LOG_DIR" "$ARTIFACTS"
 
 timestamp() { date -Iseconds; }
+now_ms() { python - <<'PY'
+import time; print(int(time.time()*1000))
+PY
+}
 
 json_escape() {
   python - <<'PY'
@@ -35,13 +39,13 @@ run_step() {
   err_file=$(mktemp)
 
   local start end dur status
-  start=$(date +%s%3N)
+  start=$(now_ms)
   if "$@" >"$out_file" 2>"$err_file"; then
     status=0
   else
     status=$?
   fi
-  end=$(date +%s%3N)
+  end=$(now_ms)
   dur=$((end-start))
 
   # Persist artifacts

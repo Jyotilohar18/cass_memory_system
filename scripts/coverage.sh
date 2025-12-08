@@ -11,7 +11,12 @@ mkdir -p "$ARTIFACTS"
 
 echo "Running coverage; artifacts in $LOG_DIR"
 
-start=$(date +%s%3N)
+now_ms() { python - <<'PY'
+import time; print(int(time.time()*1000))
+PY
+}
+
+start=$(now_ms)
 
 # bun coverage output goes to stdout; capture and also tee to file
 if bun test --coverage | tee "$ARTIFACTS/coverage.txt"; then
@@ -20,7 +25,7 @@ else
   status=$?
 fi
 
-end=$(date +%s%3N)
+end=$(now_ms)
 dur=$((end-start))
 
 # Summarize (very lightweight): grab totals line if present

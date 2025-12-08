@@ -220,7 +220,11 @@ describe("scoring", () => {
     it("promotes candidate to established", () => {
       const bullet = createTestBullet({
         maturity: "candidate",
-        feedbackEvents: [feedback("helpful", 0), feedback("helpful", 0), feedback("helpful", 0)],
+        // Use 4 events to safely exceed total >= 3 even with slight decay
+        feedbackEvents: [
+            feedback("helpful", 0), feedback("helpful", 0), 
+            feedback("helpful", 0), feedback("helpful", 0)
+        ],
       });
       expect(checkForPromotion(bullet, config)).toBe("established");
     });
@@ -274,9 +278,9 @@ describe("scoring", () => {
 
     it("returns 'auto-deprecate' if score below pruneHarmfulThreshold", () => {
         // config.pruneHarmfulThreshold default is 3. So score < -3.
-        // One harmful event (wt 4) = -4.
+        // Two harmful events (wt 4 each) = -8. Safely below -3.
         const bullet = createTestBullet({
-            feedbackEvents: [feedback("harmful", 0)],
+            feedbackEvents: [feedback("harmful", 0), feedback("harmful", 0)],
         });
         expect(checkForDemotion(bullet, config)).toBe("auto-deprecate");
     });
