@@ -173,10 +173,6 @@ export function curatePlaybook(
       case "harmful": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          // reason needs to match HarmfulReason enum or undefined
-          // We'll map string to undefined if it doesn't match, or 'other'
-          // For simplicity in Curator, assume delta.reason is valid or let Zod handle it upstream
-          // But here we might need casting if types don't align perfectly
           bullet.feedbackEvents = bullet.feedbackEvents || [];
           bullet.feedbackEvents.push({
             type: "harmful",
