@@ -289,16 +289,19 @@ export function fillPrompt(
 export function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) return content;
 
-  const keepChars = Math.floor((maxChars - 100) / 2);
-  
-  if (keepChars <= 0) {
-    return `[... ${content.length} characters truncated ...]`;
+  const marker = `\n\n[... ${content.length - maxChars} chars truncated ...]\n\n`;
+  const markerLen = marker.length;
+  const available = maxChars - markerLen;
+
+  if (available <= 0) {
+    return content.slice(0, maxChars);
   }
 
+  const keepChars = Math.floor(available / 2);
   const beginning = content.slice(0, keepChars);
   const ending = content.slice(-keepChars);
 
-  return `${beginning}\n\n[... ${content.length - maxChars} characters truncated ...]\n\n${ending}`;
+  return `${beginning}${marker}${ending}`;
 }
 
 // --- Resilience Wrapper ---
@@ -407,6 +410,250 @@ async function monitoredGenerateObject<T>(
   }
   
   return result;
+}
+
+/**
+ * Handle malformed or invalid LLM responses with progressive retry strategies.
+ * Attempts to recover valid data from responses that don't match the expected schema.
+ *
+ * Recovery strategies:
+ * 1. First retry: Add explicit JSON format instructions
+ * 2. Second retry: Include example output structure
+ * 3. Final retry: Attempt partial data extraction
+ * 4. Fail gracefully with detailed diagnostics
+ */
+export async function handleMalformedLLMResponse<T>(
+  response: unknown,
+  schema: z.ZodSchema<T>,
+  prompt: string,
+  config: Config
+): Promise<T> {
+  const MAX_ATTEMPTS = 3;
+  const errors: Array<{ attempt: number; error: string; response?: unknown }> = [];
+
+  // First, try to validate the original response
+  const initialParse = schema.safeParse(response);
+  if (initialParse.success) {
+    return initialParse.data;
+  }
+
+  // Log the malformed response for debugging
+  console.warn(`[LLM] Malformed response received. Validation error: ${initialParse.error.message}`);
+  if (process.env.DEBUG_LLM) {
+    console.debug("[LLM] Malformed response:", JSON.stringify(response, null, 2).slice(0, 500));
+  }
+
+  errors.push({
+    attempt: 0,
+    error: initialParse.error.message,
+    response: typeof response === "object" ? response : undefined
+  });
+
+  // Try to extract partial valid data
+  const partialData = tryExtractPartialData(response, schema);
+  if (partialData) {
+    console.warn("[LLM] Recovered partial valid data from malformed response");
+    return partialData;
+  }
+
+  // Prepare retry strategies
+  const llmConfig: LLMConfig = {
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    model: config.llm?.model ?? config.model,
+    apiKey: config.apiKey
+  };
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      let enhancedPrompt = prompt;
+      let temperature = 0.3;
+
+      switch (attempt) {
+        case 1:
+          // First retry: Add explicit JSON format instructions
+          enhancedPrompt = `[FORMATTING ERROR IN PREVIOUS RESPONSE - STRICT JSON REQUIRED]
+
+${prompt}
+
+CRITICAL FORMATTING REQUIREMENTS:
+- Your response MUST be valid JSON
+- All required fields MUST be present
+- Do NOT include markdown code fences
+- Do NOT include any text before or after the JSON`;
+          temperature = 0.2;
+          break;
+
+        case 2:
+          // Second retry: Include example output structure
+          const exampleStructure = generateSchemaExample(schema);
+          enhancedPrompt = `[SECOND RETRY - FOLLOW EXACT STRUCTURE]
+
+${prompt}
+
+EXPECTED OUTPUT STRUCTURE (follow this exactly):
+${exampleStructure}
+
+Ensure your response matches this structure precisely.`;
+          temperature = 0.35;
+          break;
+
+        case 3:
+          // Final retry: Simplify request
+          enhancedPrompt = `[FINAL ATTEMPT - SIMPLIFIED REQUEST]
+
+${prompt}
+
+SIMPLIFIED INSTRUCTIONS:
+1. Output ONLY valid JSON
+2. Include all required fields
+3. Use null for optional fields you're unsure about
+4. No explanatory text, only JSON`;
+          temperature = 0.4;
+          break;
+      }
+
+      const model = getModel(llmConfig);
+      const result = await monitoredGenerateObject<T>({
+        model,
+        schema,
+        prompt: enhancedPrompt,
+        temperature
+      }, config, `handleMalformedLLMResponse-retry${attempt}`);
+
+      console.warn(`[LLM] Recovery successful on attempt ${attempt}`);
+      return result.object;
+
+    } catch (err: any) {
+      errors.push({
+        attempt,
+        error: err.message || String(err)
+      });
+      console.warn(`[LLM] Recovery attempt ${attempt} failed: ${err.message}`);
+    }
+  }
+
+  // All retries exhausted - throw detailed error
+  const errorSummary = errors
+    .map(e => `  Attempt ${e.attempt}: ${e.error}`)
+    .join("\n");
+
+  const schemaDescription = describeSchema(schema);
+
+  throw new Error(
+    `LLM response recovery failed after ${MAX_ATTEMPTS} attempts.\n\n` +
+    `Errors:\n${errorSummary}\n\n` +
+    `Expected schema:\n${schemaDescription}\n\n` +
+    `Original prompt (truncated): ${prompt.slice(0, 200)}...`
+  );
+}
+
+/**
+ * Attempt to extract partial valid data from a malformed response.
+ * Returns undefined if no partial data can be recovered.
+ */
+function tryExtractPartialData<T>(response: unknown, schema: z.ZodSchema<T>): T | undefined {
+  if (typeof response !== "object" || response === null) {
+    return undefined;
+  }
+
+  try {
+    // For objects, try to coerce missing optional fields with defaults
+    const partial = schema.safeParse(response);
+    if (partial.success) {
+      return partial.data;
+    }
+
+    // Try parsing with passthrough to see what we got
+    const looseSchema = z.object({}).passthrough();
+    const looseParse = looseSchema.safeParse(response);
+
+    if (looseParse.success && Object.keys(looseParse.data).length > 0) {
+      // Attempt strict parse again - Zod may coerce some values
+      const retryParse = schema.safeParse(looseParse.data);
+      if (retryParse.success) {
+        return retryParse.data;
+      }
+    }
+  } catch {
+    // Extraction failed
+  }
+
+  return undefined;
+}
+
+/**
+ * Generate a human-readable example of what the schema expects.
+ */
+function generateSchemaExample<T>(schema: z.ZodSchema<T>): string {
+  try {
+    // Use Zod's internal shape if available
+    const def = (schema as any)._def;
+    if (def?.typeName === "ZodObject" && def.shape) {
+      const example: Record<string, any> = {};
+      for (const [key, fieldSchema] of Object.entries(def.shape())) {
+        example[key] = getFieldExample(fieldSchema as z.ZodSchema);
+      }
+      return JSON.stringify(example, null, 2);
+    }
+  } catch {
+    // Fall back to generic example
+  }
+
+  return '{ /* JSON object matching required schema */ }';
+}
+
+/**
+ * Get an example value for a Zod field type.
+ */
+function getFieldExample(schema: z.ZodSchema): any {
+  const def = (schema as any)._def;
+  const typeName = def?.typeName;
+
+  switch (typeName) {
+    case "ZodString":
+      return "string_value";
+    case "ZodNumber":
+      return 0;
+    case "ZodBoolean":
+      return false;
+    case "ZodArray":
+      return [];
+    case "ZodObject":
+      return {};
+    case "ZodEnum":
+      return def.values?.[0] ?? "enum_value";
+    case "ZodOptional":
+    case "ZodNullable":
+      return null;
+    case "ZodDefault":
+      return def.defaultValue?.();
+    default:
+      return null;
+  }
+}
+
+/**
+ * Describe a schema in human-readable form for error messages.
+ */
+function describeSchema<T>(schema: z.ZodSchema<T>): string {
+  try {
+    const def = (schema as any)._def;
+    if (def?.typeName === "ZodObject" && def.shape) {
+      const fields = Object.entries(def.shape())
+        .map(([key, fieldSchema]) => {
+          const fieldDef = (fieldSchema as any)._def;
+          const isOptional = fieldDef?.typeName === "ZodOptional";
+          const type = fieldDef?.typeName?.replace("Zod", "").toLowerCase() ?? "unknown";
+          return `  ${key}: ${type}${isOptional ? " (optional)" : " (required)"}`;
+        })
+        .join("\n");
+      return `Object with fields:\n${fields}`;
+    }
+  } catch {
+    // Fall back to generic description
+  }
+
+  return "Schema validation failed - check field types and required fields";
 }
 
 export async function generateObjectSafe<T>(
@@ -644,7 +891,7 @@ export async function generateSearchQueries(
   config: Config
 ): Promise<string[]> {
   const llmConfig: LLMConfig = {
-    provider: config.llm?.provider ?? config.provider,
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
     apiKey: config.apiKey
   };
