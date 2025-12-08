@@ -307,123 +307,59 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const maxSessions = typeof args?.maxSessions === "number" ? args.maxSessions : 20;
       const dryRun = Boolean(args?.dryRun);
       const workspace = typeof args?.workspace === "string" ? args.workspace : undefined;
-      const singleSession = typeof args?.session === "string" ? args.session : undefined;
+      const session = typeof args?.session === "string" ? args.session : undefined;
 
-      const globalPath = expandPath(config.playbookPath);
-      const repoPath = expandPath(".cass/playbook.yaml");
-      const targetPlaybookPath = (await fileExists(repoPath)) ? repoPath : globalPath;
-      const logPath = expandPath(getProcessedLogPath(workspace));
+      // Delegate to orchestrator
+      const outcome = await import("../orchestrator.js").then(m => m.orchestrateReflection(config, {
+        days,
+        maxSessions,
+        dryRun,
+        workspace,
+        session
+      }));
 
-      // Use lock to prevent concurrent reflection
-      const reflectResult = await withLock(targetPlaybookPath, async () => {
-        const processedLog = new ProcessedLog(logPath);
-        await processedLog.load();
-
-        const initialPlaybook = await loadMergedPlaybook(config);
-
-        // Find sessions to process
-        let sessions: string[] = [];
-        if (singleSession) {
-          sessions = [singleSession];
-        } else {
-          sessions = await findUnprocessedSessions(
-            processedLog.getProcessedPaths(),
-            { days, maxSessions },
-            config.cassPath
-          );
+      // Construct response
+      if (outcome.errors.length > 0) {
+        // If no sessions processed but errors occurred, treat as error
+        if (outcome.sessionsProcessed === 0) {
+           throw new Error(`Reflection failed: ${outcome.errors.join("; ")}`);
         }
+        // Otherwise, just log them (partial success)
+        logError(`Reflection partial errors: ${outcome.errors.join("; ")}`);
+      }
 
-        const unprocessed = sessions.filter(s => !processedLog.has(s));
-
-        if (unprocessed.length === 0) {
-          return {
-            sessionsProcessed: 0,
-            deltasGenerated: 0,
-            deltasApplied: 0,
-            message: "No new sessions to reflect on"
-          };
-        }
-
-        const allDeltas: PlaybookDelta[] = [];
-        const processedSessions: string[] = [];
-
-        // Process each session
-        for (const sessionPath of unprocessed) {
-          try {
-            const diary = await generateDiary(sessionPath, config);
-            const reflectResult = await reflectOnSession(diary, initialPlaybook, config);
-
-            // Validate each delta
-            const validatedDeltas: PlaybookDelta[] = [];
-            for (const delta of reflectResult.deltas) {
-              const validation = await validateDelta(delta, config);
-              if (validation.valid) {
-                validatedDeltas.push(delta);
-              }
-            }
-
-            if (validatedDeltas.length > 0) {
-              allDeltas.push(...validatedDeltas);
-            }
-
-            // Track processed session
-            processedLog.add({
-              sessionPath,
-              processedAt: now(),
-              diaryId: diary.id,
-              deltasGenerated: validatedDeltas.length
-            });
-            processedSessions.push(sessionPath);
-
-          } catch (err: any) {
-            log(`Failed to process ${sessionPath}: ${err.message}`, true);
-          }
-        }
-
-        // In dry-run mode, return deltas without applying
-        if (dryRun) {
-          return {
-            sessionsProcessed: processedSessions.length,
-            deltasGenerated: allDeltas.length,
-            deltasApplied: 0,
-            dryRun: true,
-            proposedDeltas: allDeltas.map(d => ({
-              type: d.type,
-              ...(d.type === "add" ? { content: d.bullet?.content } : {}),
-              ...(d.type !== "add" && "bulletId" in d ? { bulletId: d.bulletId } : {})
-            })),
-            message: `Would apply ${allDeltas.length} changes from ${processedSessions.length} sessions`
-          };
-        }
-
-        // Apply deltas if we have any
-        if (allDeltas.length > 0) {
-          const freshPlaybook = await loadPlaybook(targetPlaybookPath);
-          const curation = curatePlaybook(freshPlaybook, allDeltas, config, initialPlaybook);
-          await savePlaybook(curation.playbook, targetPlaybookPath);
-          await processedLog.save();
-
-          return {
-            sessionsProcessed: processedSessions.length,
-            deltasGenerated: allDeltas.length,
-            deltasApplied: curation.applied,
-            skipped: curation.skipped,
-            inversions: curation.inversions.length,
-            message: `Applied ${curation.applied} changes from ${processedSessions.length} sessions`
-          };
-        }
-
-        await processedLog.save();
+      if (dryRun) {
+        const deltas = outcome.dryRunDeltas || [];
         return {
-          sessionsProcessed: processedSessions.length,
-          deltasGenerated: 0,
+          sessionsProcessed: outcome.sessionsProcessed,
+          deltasGenerated: outcome.deltasGenerated,
           deltasApplied: 0,
-          message: "No new insights found"
+          dryRun: true,
+          proposedDeltas: deltas.map(d => ({
+            type: d.type,
+            ...(d.type === "add" ? { content: d.bullet?.content } : {}),
+            ...(d.type !== "add" && "bulletId" in d ? { bulletId: d.bulletId } : {})
+          })),
+          message: `Would apply ${outcome.deltasGenerated} changes from ${outcome.sessionsProcessed} sessions`
         };
-      });
+      }
+
+      const applied = (outcome.globalResult?.applied || 0) + (outcome.repoResult?.applied || 0);
+      const skipped = (outcome.globalResult?.skipped || 0) + (outcome.repoResult?.skipped || 0);
+      const inversions = (outcome.globalResult?.inversions.length || 0) + (outcome.repoResult?.inversions.length || 0);
 
       maybeProfile("memory_reflect", t0);
-      return reflectResult;
+
+      return {
+        sessionsProcessed: outcome.sessionsProcessed,
+        deltasGenerated: outcome.deltasGenerated,
+        deltasApplied: applied,
+        skipped,
+        inversions,
+        message: outcome.deltasGenerated > 0
+          ? `Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
+          : "No new insights found"
+      };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
