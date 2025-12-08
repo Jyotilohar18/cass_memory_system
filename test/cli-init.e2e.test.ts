@@ -231,7 +231,7 @@ describe("E2E: CLI init command", () => {
   });
 
   describe("Repo Init (.cass/)", () => {
-    it({ name: "creates repo-level .cass/ structure in git repo", timeout: 15000 }, async () => {
+    it("creates repo-level .cass/ structure in git repo", { timeout: 15000 }, async () => {
       await withTempGitRepo(async (repoDir) => {
         const logger = createTestLogger("debug");
         logger.info("Testing repo init", { repoDir });
