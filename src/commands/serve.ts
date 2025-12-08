@@ -207,6 +207,8 @@ function computePlaybookStats(playbook: any, config: any) {
   };
 }
 
+export { computePlaybookStats };
+
 async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case "cm_context": {
