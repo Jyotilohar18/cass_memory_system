@@ -265,15 +265,15 @@ async function enrichWithRelatedSessions(content: string, config: Config): Promi
 
 async function saveDiaryEntry(entry: DiaryEntry, config: Config): Promise<void> {
   if (!config.diaryDir) return;
-  
+
   // Atomic write
   const filename = `${entry.id}.json`;
   const diaryDir = expandPath(config.diaryDir);
   const filePath = path.join(diaryDir, filename);
   const tempPath = `${filePath}.tmp`;
-  
+
   await ensureDir(diaryDir);
-  
+
   try {
     await fs.writeFile(tempPath, JSON.stringify(entry, null, 2));
     await fs.rename(tempPath, filePath);
@@ -281,6 +281,185 @@ async function saveDiaryEntry(entry: DiaryEntry, config: Config): Promise<void> 
     try { await fs.unlink(tempPath); } catch {}
     throw error;
   }
+}
+
+// ============================================================================
+// DIARY LOADING
+// ============================================================================
+
+/**
+ * Custom error types for diary loading operations
+ */
+export class DiaryLoadError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: unknown,
+    public readonly errorType: "file_not_found" | "json_parse" | "schema_validation" | "unknown" = "unknown"
+  ) {
+    super(message);
+    this.name = "DiaryLoadError";
+  }
+}
+
+/**
+ * Load and validate a diary entry from disk.
+ *
+ * Process:
+ * 1. Verify file exists at diaryPath
+ * 2. Read file contents as UTF-8 string
+ * 3. Parse JSON string to object
+ * 4. Validate against DiaryEntrySchema using Zod
+ * 5. Return validated DiaryEntry
+ *
+ * @param diaryPath - Absolute path to the diary JSON file
+ * @returns Validated DiaryEntry object
+ * @throws DiaryLoadError with specific error types for debugging
+ *
+ * @example
+ * try {
+ *   const diary = await loadDiaryEntry("/path/to/diary-123.json");
+ *   console.log(diary.status, diary.accomplishments);
+ * } catch (err) {
+ *   if (err instanceof DiaryLoadError) {
+ *     console.error(`Load failed (${err.errorType}): ${err.message}`);
+ *   }
+ * }
+ */
+export async function loadDiaryEntry(diaryPath: string): Promise<DiaryEntry> {
+  const expanded = expandPath(diaryPath);
+
+  // 1. Check if file exists
+  try {
+    await fs.access(expanded);
+  } catch (err) {
+    throw new DiaryLoadError(
+      `Diary file not found: ${expanded}`,
+      err,
+      "file_not_found"
+    );
+  }
+
+  // 2. Read file contents
+  let content: string;
+  try {
+    content = await fs.readFile(expanded, "utf-8");
+  } catch (err) {
+    throw new DiaryLoadError(
+      `Failed to read diary file: ${expanded}`,
+      err,
+      "unknown"
+    );
+  }
+
+  // 3. Parse JSON
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    throw new DiaryLoadError(
+      `Invalid JSON in diary file: ${expanded}`,
+      err,
+      "json_parse"
+    );
+  }
+
+  // 4. Validate against schema
+  const result = DiaryEntrySchema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues
+      .map(i => `  - ${i.path.join(".")}: ${i.message}`)
+      .join("\n");
+    throw new DiaryLoadError(
+      `Schema validation failed for ${expanded}:\n${issues}`,
+      result.error,
+      "schema_validation"
+    );
+  }
+
+  // 5. Apply migration for old schema versions if needed
+  const diary = migrateOldDiary(result.data);
+
+  return diary;
+}
+
+/**
+ * Migrate old diary format to current schema.
+ * Adds default values for new fields to maintain backward compatibility.
+ *
+ * @param diary - Parsed diary entry
+ * @returns Migrated diary entry with all current fields
+ */
+function migrateOldDiary(diary: DiaryEntry): DiaryEntry {
+  // Ensure all arrays exist (older versions might be missing some)
+  return {
+    ...diary,
+    accomplishments: diary.accomplishments ?? [],
+    decisions: diary.decisions ?? [],
+    challenges: diary.challenges ?? [],
+    preferences: diary.preferences ?? [],
+    keyLearnings: diary.keyLearnings ?? [],
+    tags: diary.tags ?? [],
+    searchAnchors: diary.searchAnchors ?? [],
+    relatedSessions: diary.relatedSessions ?? [],
+  };
+}
+
+/**
+ * Load all diary entries from a directory.
+ *
+ * @param diaryDir - Directory containing diary JSON files
+ * @returns Array of validated DiaryEntry objects (skips invalid files)
+ *
+ * @example
+ * const diaries = await loadAllDiaries("~/.cass-memory/diary");
+ * const stats = computeDiaryStats(diaries);
+ */
+export async function loadAllDiaries(diaryDir: string): Promise<DiaryEntry[]> {
+  const expanded = expandPath(diaryDir);
+
+  // Check if directory exists
+  try {
+    await fs.access(expanded);
+  } catch {
+    return []; // Directory doesn't exist, return empty
+  }
+
+  const files = await fs.readdir(expanded);
+  const diaries: DiaryEntry[] = [];
+
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+
+    try {
+      const diary = await loadDiaryEntry(path.join(expanded, file));
+      diaries.push(diary);
+    } catch (err) {
+      // Log but don't throw - skip invalid diary files
+      console.warn(`Skipping invalid diary file ${file}: ${err}`);
+    }
+  }
+
+  // Sort by timestamp (newest first)
+  diaries.sort((a, b) =>
+    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
+
+  return diaries;
+}
+
+/**
+ * Find a diary entry by session path.
+ *
+ * @param diaryDir - Directory containing diary JSON files
+ * @param sessionPath - Session path to search for
+ * @returns DiaryEntry if found, undefined otherwise
+ */
+export async function findDiaryBySession(
+  diaryDir: string,
+  sessionPath: string
+): Promise<DiaryEntry | undefined> {
+  const diaries = await loadAllDiaries(diaryDir);
+  return diaries.find(d => d.sessionPath === sessionPath);
 }
 
 // --- Safe Extraction Wrapper ---
