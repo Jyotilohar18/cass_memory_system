@@ -113,7 +113,7 @@ export function calculateMaturityState(
   // Use epsilon to handle floating point decay on very recent events
   const epsilon = 0.01;
 
-  if (harmfulRatio > 0.3 && total > minFeedbackForActive) return "deprecated"; 
+  if (harmfulRatio > 0.3 && total > 0) return "deprecated"; 
   if (total < minFeedbackForActive - epsilon) return "candidate";                        
   if (decayedHelpful >= minHelpfulForProven - epsilon && harmfulRatio < maxHarmfulRatioForProven) return "proven";
   
