@@ -4,10 +4,14 @@
 - Prerequisites: Bun ≥1.0, Node.js 18+, Git
 - Clone: `git clone <repo>` then `cd cass_memory_system`
 - Install deps: `bun install`
-- Dev entrypoints: `bun run dev` (future) or run individual commands with `bun run src/cm.ts -- <cmd>`
+- Dev entrypoints:
+  - One-off: `bun run dev -- <command> [args]`
+  - Hot reload while editing: `bun run dev:watch -- <command> [args]`
+  - Keep type safety running: `bun run typecheck:watch`
 
 ## 2) Running tests
 - Unit tests: `bun test`
+- Watch mode: `bun run test:watch`
 - Integration tests: `bun test --filter integration` (when added)
 - Coverage: `bun test --coverage`
 - Typecheck: `bun run typecheck`

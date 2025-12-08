@@ -193,23 +193,78 @@ cm mark rule-456 harmful --reason "caused test failures"
 # View your playbook
 cm playbook
 
-# Check system health
-cm status
+# Check playbook health metrics
+cm stats
+
+# Diagnose system health
+cm doctor
 ```
+
+---
+
+## 🏗️ Architecture & Data Flow
+
+- **CLI + MCP server**: The same codebase powers the human CLI (`cm`) and MCP tools for agents. Commands are thin wrappers over modules in `src/commands/*`, keeping behavior consistent across humans and agents.
+- **ACE pipeline**: Generator → Reflector → Curator → Validator. Context hydration happens first; reflection extracts patterns; validation checks evidence; curation applies deltas deterministically (no LLM rewriting).
+- **Three memory layers**:
+  - *Episodic* (cass): raw session logs queried via `cass search --robot`.
+  - *Working* (Diary): structured session summaries under `~/.cass-memory/diary/`.
+  - *Procedural* (Playbook): distilled rules in global `~/.cass-memory/playbook.yaml` plus repo `.cass/playbook.yaml`, merged at runtime.
+- **Deterministic merges**: Playbooks cascade global → repo; toxic blocklists prune unsafe content; deprecated patterns stay searchable but are excluded from active rules.
+- **Cass wrappers**: `src/cass.ts` handles health checks, retries, index rebuilds, and timeout fallbacks so context/reflect degrade gracefully when search is slow or missing.
+
+## 🔬 Algorithms & Scoring
+
+- **Keyword relevance**: Tokens from the task are matched against rule text and tags (higher weight on tags) to produce a relevance score.
+- **Confidence decay**: Each feedback event decays with a half-life (default 90 days). Effective score = decayed helpful − (harmful × multiplier). Harmful multiplier defaults to 4 to penalize bad rules harder.
+- **Promotion gates**: Maturity progresses from candidate → established → proven based on helpful/harmful ratios and counts; pinned rules bypass pruning.
+- **Deprecated/tombstones**: Deprecated patterns remain recorded with replacement suggestions so agents avoid regressions while still seeing provenance.
+- **Suggested queries**: Task keywords generate cass search commands with varying lookback windows to deepen investigation without guessing queries.
+
+## 🛡️ Operational Modes & Graceful Degradation
+
+- **Full**: cass available + playbook loaded + optional LLM features.
+- **No cass**: Context falls back to playbook-only scoring; warnings explain degraded mode; history/suggested searches are elided.
+- **No playbook**: A fresh empty playbook is synthesized so commands remain functional.
+- **No LLM**: Reflection/validation run in lightweight, deterministic mode; CLI remains usable without API keys.
+- **Offline**: Cached playbook plus local diary files still fuel `cm context`; failures are surfaced as user-friendly warnings, not crashes.
+
+## 🔒 Security & Privacy Model (practical details)
+
+- **Local-first storage**: All state lives under `~/.cass-memory` and repo-local `.cass/`; no telemetry or external calls unless you opt into LLM.
+- **Secret scrubbing**: Sanitization patterns strip common key formats (AWS, PATs, Bearer tokens, DB URLs, private keys) before storing diary/playbook text or sending to LLMs.
+- **Blocked content**: Project and global `toxic*.log` files prevent previously flagged patterns from re-entering the playbook (semantic match with Jaccard similarity).
+- **Provenance**: Bullets carry source sessions/agents so rules can be audited; feedback events include timestamps and optional reasons.
+
+## 📦 Build & Distribution
+
+- **Single-binary targets (bun --compile)**: `bun build src/cass-memory.ts --compile --target=linux-x64|darwin-arm64|windows-x64 --outfile dist/cass-memory-*` produces self-contained executables—no Bun or Node runtime required.
+- **Current-platform dev build**: `bun run build` emits `dist/cass-memory` for your OS; binaries stay small and expose `--help`/`--version`.
+- **Release flow**: Binaries land in `dist/` for attaching to GitHub releases; naming follows `cass-memory-linux`, `cass-memory-macos`, `cass-memory-windows.exe`, plus `cass-memory` for the local build.
+
+## 🛠️ Developer Workflow (fast feedback)
+
+- **Hot reload**: `bun --watch run src/cass-memory.ts <command>` restarts on source changes.
+- **Type safety**: `bun run typecheck` (or `tsc --noEmit`) runs continuously with `--watch`.
+- **Tests**: `bun test` and `bun test --watch` cover the suite; keep a watch pane open while iterating.
+- **Lint/format**: Prefer small, surgical edits over bulk codemods; follow existing style and avoid adding new lockfiles or toolchains.
+- **DX principle**: All commands should deliver value within seconds on a clean machine; degraded modes must still return helpful output instead of failing hard.
 
 ---
 
 ## 📋 Command Reference
 
-### Core Commands (V1)
+### Core Commands
 
 | Command | Purpose | Example |
 |---------|---------|---------|
 | `context <task>` | Get relevant rules + history for a task | `cm context "debug auth"` |
 | `mark <rule> <feedback>` | Record helpful/harmful feedback | `cm mark rule-123 helpful` |
 | `playbook` | List, add, or remove playbook rules | `cm playbook add "Always validate JWT"` |
-| `status` | Check system health and statistics | `cm status` |
+| `stats` | Show playbook health and score distribution | `cm stats` |
+| `doctor` | Diagnose system health and configuration | `cm doctor --fix` |
 | `reflect` | Extract rules from recent sessions | `cm reflect --dry-run` |
+| `init` | Initialize configuration (optional—zero-config works without it) | `cm init` |
 
 ### Context Command
 
@@ -262,38 +317,65 @@ cm playbook remove rule-123
 cm playbook stats
 ```
 
-### Status Command
+### Stats Command
 
 ```bash
-# Quick health check
-cm status
+# Show playbook health dashboard
+cm stats
 
-# Detailed diagnostics
-cm status --full
-
-# JSON output
-cm status --json
+# JSON output for programmatic use
+cm stats --json
 ```
 
 **Output:**
 ```
-╭─────────────────────────────────────────────────────────╮
-│              CASS-MEMORY STATUS                         │
-├─────────────────────────────────────────────────────────┤
-│ SYSTEM HEALTH: ✓ Healthy                                │
-│                                                         │
-│ CASS INTEGRATION                                        │
-│   ✓ cass found: /usr/local/bin/cass (v0.8.2)           │
-│   ✓ 1,247 sessions indexed                             │
-│                                                         │
-│ PLAYBOOK                                                │
-│   Rules: 45 active, 12 proven, 8 at risk               │
-│   Anti-patterns: 7                                      │
-│                                                         │
-│ RECENT ACTIVITY                                         │
-│   Last reflection: 2 hours ago                          │
-│   Sessions processed: 156                               │
-╰─────────────────────────────────────────────────────────╯
+📊 Playbook Health Dashboard
+Total Bullets: 45
+
+By Scope:
+  global: 32
+  workspace: 13
+
+By State:
+  proven: 12
+  established: 25
+  candidate: 8
+
+Score Distribution:
+  🌟 Excellent (>10): 8
+  ✅ Good (5-10):    15
+  ⚪ Neutral (0-5):  17
+  ⚠️  At Risk (<0):   5
+
+🏆 Top Performers (effective score):
+  1. [rule-abc123] Always validate JWT before... (15.2)
+  2. [rule-def456] Check token expiry first... (12.8)
+```
+
+### Doctor Command
+
+```bash
+# Diagnose system health
+cm doctor
+
+# Auto-fix detected issues
+cm doctor --fix
+
+# JSON output
+cm doctor --json
+```
+
+**Output:**
+```
+🏥 System Health Check
+
+✅ Cass Integration: cass CLI found at /usr/local/bin/cass
+✅ Storage: Playbook: Found, Diary: Found
+✅ LLM Configuration: Provider: anthropic, API Key: Configured
+✅ Repo .cass/ Structure: Found with playbook.yaml
+⚠️  Sanitization Pattern Health: 1 potentially broad pattern
+   - Bearer token pattern may cause false positives
+     Suggestion: Consider tightening with explicit delimiters
 ```
 
 ---
@@ -678,8 +760,35 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 git clone https://github.com/user/cass-memory
 cd cass-memory
 bun install
-bun run dev
+
+# Run directly from source (no build step)
+bun run dev -- <command> [args]
+
+# Hot reload while you edit
+bun run dev:watch -- <command> [args]
+
+# Continuous types/tests in separate terminals
+bun run typecheck:watch
+bun run test:watch
 ```
+
+### Building Binaries
+
+```bash
+# Build host binary
+bun run build
+
+# Cross-compile
+bun run build:linux
+bun run build:macos-arm
+bun run build:macos-x64
+bun run build:windows
+
+# All targets
+bun run build:all
+```
+
+Artifacts write to `dist/` (e.g., `dist/cass-memory-darwin-arm64`, `dist/cass-memory-windows-x64.exe`).
 
 ### Running Tests
 
