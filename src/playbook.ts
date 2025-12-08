@@ -337,8 +337,9 @@ export function computeFullStats(playbook: Playbook, config: Config): PlaybookSt
     else stats.byType.rule++;
     
     const score = getEffectiveScore(b, config);
-    if (score > 10) stats.scoreDistribution.excellent++;
-    else if (score > 5) stats.scoreDistribution.good++;
+    // Thresholds aligned with scoring.ts analyzeScoreDistribution
+    if (score >= 5) stats.scoreDistribution.excellent++;
+    else if (score >= 2) stats.scoreDistribution.good++;
     else if (score >= 0) stats.scoreDistribution.neutral++;
     else stats.scoreDistribution.atRisk++;
   }

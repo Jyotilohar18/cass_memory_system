@@ -209,10 +209,30 @@ export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; fr
   try {
     const expanded = expandPath(dirPath);
     await ensureDir(expanded);
-    const { stdout } = await execAsync(`df -h "${expanded}" | tail -1 | awk '{print $4}'`);
-    return { ok: true, free: stdout.trim() };
+
+    // Use execFile with arguments to prevent command injection
+    const { execFile: execFileCb } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFileCb);
+
+    const { stdout } = await execFileAsync("df", ["-h", expanded]);
+
+    // Parse df output - last line, 4th column (Available space)
+    const lines = stdout.trim().split("\n");
+    if (lines.length < 2) {
+      return { ok: true, free: "unknown" };
+    }
+
+    // Get last line (the filesystem info), split by whitespace
+    const lastLine = lines[lines.length - 1];
+    const columns = lastLine.split(/\s+/);
+
+    // df -h format: Filesystem Size Used Avail Use% Mounted
+    // Available is typically column 4 (index 3)
+    const free = columns[3] || "unknown";
+    return { ok: true, free };
   } catch {
-    return { ok: true, free: "unknown" }; 
+    return { ok: true, free: "unknown" };
   }
 }
 

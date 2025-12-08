@@ -5564,6 +5564,15 @@ bullets:
 - Dev workflow docs: cass_memory_system-4hey
 - Scope governance (this bead): cass_memory_system-4fj7
 
+### Quick status snapshot (rolling)
+- Agent surface: NOT STARTED (8nsd open)
+- Context polish: IN PROGRESS (dpuu blocked on reservations; qt2q in progress by GreenDog)
+- Budget/cost: PARTIAL (config defaults added; enforcement/UI TBD)
+- Degradation: DONE per c8w5
+- Command surface: DONE per nf0v
+- Binaries: TODO (iqat open)
+- Dev docs: TODO (4hey open)
+
 ---
 
 ## Conclusion

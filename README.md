@@ -169,6 +169,74 @@ cm reflect --llm      # Uses LLM, tracks cost
 
 ### Installation
 
+Pick the path that fits your environment. Prebuilt binaries are fastest; source install is available if you’re hacking on the project.
+
+**Prebuilt binaries (recommended)**
+- macOS (Apple Silicon):  
+  `curl -L https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-darwin-arm64 -o cass-memory && chmod +x cass-memory && mv cass-memory /usr/local/bin/`
+- macOS (Intel):  
+  `curl -L https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-darwin-x64 -o cass-memory && chmod +x cass-memory && mv cass-memory /usr/local/bin/`
+- Linux (x64):  
+  `curl -L https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-linux-x64 -o cass-memory && chmod +x cass-memory && sudo mv cass-memory /usr/local/bin/`
+- Windows (x64):  
+  Download `cass-memory-windows-x64.exe` from the latest GitHub release and put it somewhere on your `%PATH%` (e.g., `C:\Tools\cass-memory.exe`).
+
+**From source (Bun)**
+```bash
+git clone https://github.com/Dicklesworthstone/cass_memory_system.git
+cd cass_memory_system
+bun install
+bun run build           # produces dist/cass-memory for your platform
+./dist/cass-memory --version
+```
+
+**Global CLI via Bun**
+```bash
+bun install -g cass-memory
+cass-memory --version
+```
+
+> Note: npm/yarn/pnpm are not supported in this repo. Use Bun for installs and scripts.
+
+**Prerequisites**
+- `cass` CLI installed and indexed (for history lookups)
+- LLM API key set in environment (e.g., `export ANTHROPIC_API_KEY=...` or `OPENAI_API_KEY=...`) if you plan to use LLM-powered features
+
+**Verify install**
+```bash
+cass-memory --version
+cass-memory doctor --json   # quick health check
+```
+
+**Common troubleshooting**
+- “permission denied”: ensure the binary is executable (`chmod +x cass-memory`) and on your `PATH`.
+- macOS “cannot be opened because the developer cannot be verified”: run `xattr -dr com.apple.quarantine cass-memory`.
+- “cass not found”: install/index the `cass` CLI, or run commands that don’t require history until it’s available.
+- No LLM key: commands degrade to local/keyword behavior; set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to enable LLM features.
+
+### Command cheat sheet
+- `cass-memory init --json` — create global config/playbook (use `--force` to reinit)
+- `cass-memory context "<task>" --json` — get rules + history for a task
+- `cass-memory mark <rule-id> --helpful|--harmful --reason "<why>" --json` — record feedback
+- `cass-memory reflect --days 7 --json` — process recent sessions into playbook deltas
+- `cass-memory stats --json` — playbook health summary
+- `cass-memory doctor --json` — system health check (cass, LLM keys, file perms)
+- `cass-memory project --format agents.md --output AGENTS.md` — export rules for agent prompts
+- `cass-memory audit --days 7 --json` — check recent sessions for rule violations
+
+### Typical workflow
+1. `cass-memory init` (once per machine/repo).
+2. Before a task: `cass-memory context "<task>" --json` and read the bullets/history.
+3. Do the work; when a rule helps or hurts: `cass-memory mark <rule-id> --helpful|--harmful --reason "..."`
+4. Periodically: `cass-memory reflect --days 7 --json` to add/improve rules.
+5. Health check: `cass-memory doctor --json`; fix anything it reports.
+6. Share with teammates/agents: `cass-memory project --format agents.md --output AGENTS.md`.
+
+### Inline examples
+- Debug auth timeout: `cass-memory context "authentication timeout" --json`
+- Mark a helpful rule: `cass-memory mark b-abc123 --helpful --session ~/.claude/sessions/123.jsonl --json`
+- Run reflection without LLM (local-only): `CASS_MEMORY_LLM=none cass-memory reflect --days 3 --json`
+
 ```bash
 # Using bun (recommended)
 bun install -g cm

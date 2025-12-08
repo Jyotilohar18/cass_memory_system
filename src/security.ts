@@ -97,7 +97,8 @@ export function compileExtraPatterns(patterns: Array<string | RegExp> = []): Reg
       // Defensive: skip excessively long or potentially catastrophic patterns
       if (!trimmed || trimmed.length > 256) continue;
       // Heuristic ReDoS guard: avoid nested quantifiers like (.+)+ or (.*)+
-      if (/(.\+|\.\*)\+/.test(trimmed)) continue;
+      // Matches a group containing * or + followed by another quantifier
+      if (/\([^)]*[*+][^)]*\)[*+?]/.test(trimmed)) continue;
 
       compiled.push(new RegExp(trimmed, "gi"));
     } catch {

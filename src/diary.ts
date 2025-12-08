@@ -35,6 +35,8 @@ const TECH_TERM_PATTERNS = [
   /\b(api|rest|graphql|websocket|grpc|microservice|serverless|async\/await|promise|middleware)\b/gi,
   // Error patterns
   /\b(error|exception|bug|fix|debug|timeout|memory\s*leak|stack\s*trace|null\s*pointer)\b/gi,
+  // Project specific (for cass-memory)
+  /\b(cass|cass-memory|playbook|diary|bullet|delta|reflector|curator|validator|llm|context)\b/gi
 ];
 
 /**
@@ -54,7 +56,9 @@ const ANCHOR_STOP_WORDS = new Set([
   "get", "got", "make", "made", "need", "needed", "use", "used", "using", "work",
   "worked", "working", "try", "tried", "trying", "want", "wanted", "think", "thought",
   "know", "knew", "see", "saw", "look", "looked", "find", "found", "give", "gave",
-  "take", "took", "come", "came", "way", "well", "back", "even", "still", "while"
+  "take", "took", "come", "came", "way", "well", "back", "even", "still", "while",
+  "create", "created", "update", "updated", "delete", "deleted", "remove", "removed",
+  "add", "added", "fix", "fixed", "change", "changed", "run", "ran", "start", "started"
 ]);
 
 /**
@@ -203,6 +207,7 @@ const ExtractionSchema = DiaryEntrySchema.pick({
 export async function generateDiary(sessionPath: string, config: Config): Promise<DiaryEntry> {
   const rawContent = await exportSessionSafe(sessionPath, config.cassPath);
   
+  // Use helper to get compiled regex patterns
   const sanitizeConfig = getSanitizeConfig(config);
   const sanitizedContent = sanitize(rawContent, sanitizeConfig);
   
@@ -254,13 +259,13 @@ export async function generateDiary(sessionPath: string, config: Config): Promis
     agent,
     workspace,
     status: extracted.status,
-    accomplishments: extracted.accomplishments || [],
-    decisions: extracted.decisions || [],
-    challenges: extracted.challenges || [],
-    preferences: extracted.preferences || [],
-    keyLearnings: extracted.keyLearnings ?? [],
-    tags: extracted.tags ?? [],
-    searchAnchors: extracted.searchAnchors ?? [],
+    accomplishments: extracted.accomplishments,
+    decisions: extracted.decisions,
+    challenges: extracted.challenges,
+    preferences: extracted.preferences,
+    keyLearnings: extracted.keyLearnings,
+    tags: extracted.tags,
+    searchAnchors: extracted.searchAnchors,
     relatedSessions: related
   };
   
@@ -443,9 +448,10 @@ async function enrichWithRelatedSessions(
 
   try {
     // Search for related sessions
+    // Use relatedSessionsDays (not sessionLookbackDays) for cross-agent lookback
     const hits = await safeCassSearch(searchQuery, {
-      limit: 20, // Get more than we need for filtering
-      days: config.sessionLookbackDays ?? 30,
+      limit: (config.maxRelatedSessions ?? 5) * 4, // Get more than we need for filtering
+      days: config.relatedSessionsDays ?? 30,
     }, config.cassPath);
 
     if (hits.length === 0) {
@@ -466,10 +472,10 @@ async function enrichWithRelatedSessions(
         const score = calculateRelevanceScore(hit, keywords);
         return { hit, score };
       })
-      // Filter by score > 0.1
-      .filter(({ score }) => score >= 0.1)
+      // Filter by minimum relevance score from config
+      .filter(({ score }) => score >= (config.minRelevanceScore ?? 0.1))
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
+      .slice(0, config.maxRelatedSessions ?? 5);
 
     // Convert to RelatedSession format
     return scoredHits.map(({ hit, score }): RelatedSession => ({

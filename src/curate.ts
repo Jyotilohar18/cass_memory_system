@@ -120,7 +120,7 @@ export function curatePlaybook(
         
         // 1. Exact duplicate check (against reference/merged)
         if (existingHashes.has(hash)) {
-          result.skipped++;
+          // Don't increment skipped here - handled at end of loop when applied=false
           break;
         }
         
@@ -138,10 +138,10 @@ export function curatePlaybook(
              });
              targetSimilar.helpfulCount++;
              targetSimilar.updatedAt = now();
-             result.applied++;
+             applied = true;  // Fix: set applied flag instead of incrementing directly
           } else {
              // Exists in Repo but not Global. Skip adding to Global to avoid duplication.
-             result.skipped++;
+             // Note: applied remains false, will be counted as skipped at end of loop
           }
           break;
         }
@@ -170,7 +170,7 @@ export function curatePlaybook(
           );
 
           if (alreadyRecorded) {
-            result.skipped++;
+            // Don't increment skipped here - handled at end of loop when applied=false
             break;
           }
 
@@ -200,7 +200,7 @@ export function curatePlaybook(
           );
 
           if (alreadyRecorded) {
-            result.skipped++;
+            // Don't increment skipped here - handled at end of loop when applied=false
             break;
           }
 

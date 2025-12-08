@@ -213,7 +213,7 @@ Consider:
 
 Respond with:
 {
-  "verdict": "ACCEPT" | "REJECT" | "REFINE",
+  "verdict": "ACCEPT" | "REJECT" | "REFINE" | "ACCEPT_WITH_CAUTION",
   "confidence": number,  // 0.0-1.0
   "reason": string,
   "suggestedRefinement": string | null,  // Suggested improvement if partially valid
@@ -348,11 +348,11 @@ export async function llmWithRetry<T>(
   }
 }
 
-async function monitoredGenerateObject(
+async function monitoredGenerateObject<T>(
   options: any,
   config: Config,
   context: string
-): Promise<any> {
+) {
   const budgetCheck = await checkBudget(config);
   if (!budgetCheck.allowed) {
     throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
@@ -477,7 +477,7 @@ Decisions: ${diary.decisions.join('\n- ')}
 Challenges: ${diary.challenges.join('\n- ')}
 Preferences: ${diary.preferences.join('\n- ')}
 Key Learnings: ${diary.keyLearnings.join('\n- ')}
-`
+`.trim();
 
   const iterationNote = iteration > 0
     ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
@@ -506,7 +506,7 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
 
 export interface ValidatorResult {
   valid: boolean;
-  verdict: 'ACCEPT' | 'REJECT' | 'REFINE';
+  verdict: 'ACCEPT' | 'REJECT' | 'REFINE' | 'ACCEPT_WITH_CAUTION';
   confidence: number;
   reason: string;
   evidence: Array<{ sessionPath: string; snippet: string; supports: boolean }>;
@@ -514,7 +514,7 @@ export interface ValidatorResult {
 }
 
 const ValidatorOutputSchema = z.object({
-  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE']),
+  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE', 'ACCEPT_WITH_CAUTION']),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   evidence: z.object({
@@ -552,20 +552,18 @@ export async function runValidator(
       temperature: 0.2,
     }, config, "runValidator");
 
-    const result = object as z.infer<typeof ValidatorOutputSchema>;
-
     const mappedEvidence = [
-      ...result.evidence.supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...result.evidence.contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
+      ...object.evidence.supporting.map(s => ({ sessionPath: "unknown", snippet: s, supports: true })),
+      ...object.evidence.contradicting.map(s => ({ sessionPath: "unknown", snippet: s, supports: false }))
     ];
 
     return {
-      valid: result.verdict === 'ACCEPT',
-      verdict: result.verdict,
-      confidence: result.confidence,
-      reason: result.reason,
+      valid: object.verdict === 'ACCEPT',
+      verdict: object.verdict,
+      confidence: object.confidence,
+      reason: object.reason,
       evidence: mappedEvidence,
-      suggestedRefinement: result.suggestedRefinement || undefined
+      suggestedRefinement: object.suggestedRefinement || undefined
     };
   }, "runValidator");
 }
@@ -599,9 +597,7 @@ export async function generateContext(
       prompt,
       temperature: 0.3,
     }, config, "generateContext");
-    
-    const result = object as { briefing: string };
-    return result.briefing;
+    return object.briefing;
   }, "generateContext");
 }
 
@@ -634,9 +630,7 @@ Make queries specific enough to be useful but broad enough to match variations.`
       prompt,
       temperature: 0.5,
     }, config, "generateSearchQueries");
-    
-    const result = object as { queries: string[] };
-    return result.queries;
+    return object.queries;
   }, "generateSearchQueries");
 }
 

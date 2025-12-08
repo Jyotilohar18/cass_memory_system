@@ -23,6 +23,12 @@ function getHarmfulMultiplier(config: Config): number {
   return 4;
 }
 
+function getPruneHarmfulThreshold(config: Config): number {
+  const threshold = (config as any)?.pruneHarmfulThreshold;
+  if (typeof threshold === "number" && threshold > 0) return threshold;
+  return 3; // Default: prune if score < -3
+}
+
 // ---------------------------------------------------------------------------
 // Decay
 // ---------------------------------------------------------------------------
@@ -132,8 +138,9 @@ export function checkForDemotion(
   if (bullet.pinned) return bullet.maturity;
 
   const score = getEffectiveScore(bullet, config);
+  const threshold = getPruneHarmfulThreshold(config);
 
-  if (score < -config.pruneHarmfulThreshold) {
+  if (score < -threshold) {
     return "auto-deprecate";
   }
 
