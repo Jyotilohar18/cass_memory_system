@@ -176,3 +176,32 @@ export async function getUsageStats(config: Config): Promise<{
     monthlyLimit: config.budget?.monthlyLimit ?? 0
   };
 }
+
+/**
+ * Format a cost summary string for display after LLM operations.
+ * Shows operation cost and current budget consumption.
+ */
+export function formatCostSummary(
+  operationCost: number,
+  stats: { today: number; month: number; dailyLimit: number; monthlyLimit: number }
+): string {
+  const parts: string[] = [];
+
+  // Operation cost
+  parts.push(`Cost: $${operationCost.toFixed(4)}`);
+
+  // Daily usage
+  if (stats.dailyLimit > 0) {
+    const dailyPercent = ((stats.today / stats.dailyLimit) * 100).toFixed(0);
+    const dailyWarning = stats.today >= stats.dailyLimit * 0.8 ? " ⚠️" : "";
+    parts.push(`Daily: $${stats.today.toFixed(2)}/$${stats.dailyLimit.toFixed(2)} (${dailyPercent}%)${dailyWarning}`);
+  }
+
+  // Monthly usage
+  if (stats.monthlyLimit > 0) {
+    const monthlyPercent = ((stats.month / stats.monthlyLimit) * 100).toFixed(0);
+    parts.push(`Monthly: $${stats.month.toFixed(2)}/$${stats.monthlyLimit.toFixed(2)} (${monthlyPercent}%)`);
+  }
+
+  return parts.join(", ");
+}

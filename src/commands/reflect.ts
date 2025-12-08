@@ -9,10 +9,11 @@ import { curatePlaybook } from "../curate.js";
 import { expandPath, log, warn, error, now, fileExists } from "../utils.js";
 import { withLock } from "../lock.js";
 import { PlaybookDelta } from "../types.js";
+import { getUsageStats, formatCostSummary } from "../cost.js";
 import chalk from "chalk";
 
 export async function reflectCommand(
-  options: { 
+  options: {
     days?: number;
     maxSessions?: number;
     agent?: string;
@@ -24,13 +25,9 @@ export async function reflectCommand(
   } = {}
 ): Promise<void> {
   const config = await loadConfig();
-  
-  // Handle LLM opt-in
-  if (options.llm === false) { // Only disable if explicitly set to false, or default logic? 
-      // CLI flags usually boolean. If undefined, default behavior.
-      // If user passes --no-llm, commander might pass false.
-      // Let's assume config handles defaults.
-  }
+
+  // Track costs before operation
+  const statsBefore = await getUsageStats(config);
   
   const globalPath = expandPath(config.playbookPath);
   const repoPath = expandPath(".cass/playbook.yaml");
@@ -135,7 +132,7 @@ export async function reflectCommand(
 Reflection complete!`));
           console.log(`Applied ${curation.applied} changes.`);
           console.log(`Skipped ${curation.skipped} (duplicates/conflicts).`);
-          
+
           if (curation.inversions.length > 0) {
             console.log(chalk.yellow(`
 Inverted ${curation.inversions.length} harmful rules:`));
@@ -143,10 +140,24 @@ Inverted ${curation.inversions.length} harmful rules:`));
               console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
             });
           }
+
+          // Display cost summary
+          const statsAfter = await getUsageStats(config);
+          const operationCost = statsAfter.today - statsBefore.today;
+          if (operationCost > 0) {
+            console.log(chalk.dim(formatCostSummary(operationCost, statsAfter)));
+          }
       }
     } else {
       await processedLog.save(); // Save progress even if no deltas
       if (!options.json) console.log("No new insights found.");
+
+      // Display cost summary even if no deltas generated (LLM still ran)
+      const statsAfter = await getUsageStats(config);
+      const operationCost = statsAfter.today - statsBefore.today;
+      if (operationCost > 0 && !options.json) {
+        console.log(chalk.dim(formatCostSummary(operationCost, statsAfter)));
+      }
     }
   });
 }

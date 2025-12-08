@@ -1,14 +1,24 @@
 import { loadConfig } from "../config.js";
-import { cassAvailable, cassStats } from "../cass.js";
-import { fileExists, resolveRepoDir, resolveGlobalDir } from "../utils.js";
-import { isLLMAvailable } from "../llm.js";
+import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
+import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath } from "../utils.js";
+import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
+import { loadPlaybook } from "../playbook.js";
+import { Config } from "../types.js";
 import chalk from "chalk";
 import path from "node:path";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type OverallStatus = "healthy" | "degraded" | "unhealthy";
 type PatternMatch = { pattern: string; sample: string; replacement: string; suggestion?: string };
+
+export interface HealthCheck {
+  category: string;
+  item: string;
+  status: CheckStatus;
+  message: string;
+  details?: unknown;
+}
 
 function statusIcon(status: CheckStatus): string {
   if (status === "pass") return "✅";
@@ -43,6 +53,232 @@ function testPatternBreadth(
   }
 
   return { matches, tested };
+}
+
+/**
+ * Run end-to-end smoke tests of core functionality.
+ * Returns an array of HealthCheck results for integration into doctor command.
+ */
+export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
+  const checks: HealthCheck[] = [];
+
+  // 1. PLAYBOOK LOAD PERFORMANCE
+  const playbookPath = expandPath(config.playbookPath);
+  try {
+    const start = Date.now();
+    const playbook = await loadPlaybook(playbookPath);
+    const loadTime = Date.now() - start;
+    const bulletCount = playbook.bullets?.length ?? 0;
+
+    if (loadTime > 500) {
+      checks.push({
+        category: "Self-Test",
+        item: "Playbook Load",
+        status: "warn",
+        message: `Slow: ${loadTime}ms (consider optimization)`,
+        details: { loadTime, bulletCount, path: playbookPath },
+      });
+    } else {
+      checks.push({
+        category: "Self-Test",
+        item: "Playbook Load",
+        status: "pass",
+        message: `${loadTime}ms (${bulletCount} bullets)`,
+        details: { loadTime, bulletCount, path: playbookPath },
+      });
+    }
+  } catch (err: any) {
+    checks.push({
+      category: "Self-Test",
+      item: "Playbook Load",
+      status: "fail",
+      message: `Failed: ${err.message}`,
+      details: { error: err.message, path: playbookPath },
+    });
+  }
+
+  // 2. CASS SEARCH LATENCY
+  const cassOk = cassAvailable(config.cassPath);
+  if (cassOk) {
+    const start = Date.now();
+    try {
+      // Use safeCassSearch which handles errors gracefully
+      const results = await safeCassSearch("self test query", { limit: 5 }, config.cassPath);
+      const searchTime = Date.now() - start;
+
+      if (searchTime > 5000) {
+        checks.push({
+          category: "Self-Test",
+          item: "Cass Search",
+          status: "fail",
+          message: `Very slow: ${searchTime}ms`,
+          details: { searchTime, resultCount: results.length },
+        });
+      } else if (searchTime > 2000) {
+        checks.push({
+          category: "Self-Test",
+          item: "Cass Search",
+          status: "warn",
+          message: `Slow: ${searchTime}ms`,
+          details: { searchTime, resultCount: results.length },
+        });
+      } else {
+        checks.push({
+          category: "Self-Test",
+          item: "Cass Search",
+          status: "pass",
+          message: `${searchTime}ms`,
+          details: { searchTime, resultCount: results.length },
+        });
+      }
+    } catch (err: any) {
+      checks.push({
+        category: "Self-Test",
+        item: "Cass Search",
+        status: "fail",
+        message: `Search failed: ${err.message}`,
+        details: { error: err.message },
+      });
+    }
+  } else {
+    checks.push({
+      category: "Self-Test",
+      item: "Cass Search",
+      status: "warn",
+      message: "Skipped (cass not available)",
+      details: { cassPath: config.cassPath },
+    });
+  }
+
+  // 3. SANITIZATION PATTERN BREADTH
+  const patternCount = SECRET_PATTERNS.length;
+  const extraPatterns = config.sanitization?.extraPatterns || [];
+  const compiledExtra = compileExtraPatterns(extraPatterns);
+  const totalPatterns = patternCount + compiledExtra.length;
+
+  if (!config.sanitization?.enabled) {
+    checks.push({
+      category: "Self-Test",
+      item: "Sanitization",
+      status: "warn",
+      message: "Disabled",
+      details: { enabled: false },
+    });
+  } else if (totalPatterns < 10) {
+    checks.push({
+      category: "Self-Test",
+      item: "Sanitization",
+      status: "warn",
+      message: `Only ${totalPatterns} patterns (recommend ≥10)`,
+      details: { builtIn: patternCount, custom: compiledExtra.length },
+    });
+  } else {
+    checks.push({
+      category: "Self-Test",
+      item: "Sanitization",
+      status: "pass",
+      message: `${totalPatterns} patterns loaded`,
+      details: { builtIn: patternCount, custom: compiledExtra.length },
+    });
+  }
+
+  // 4. CONFIG VALIDATION
+  const configIssues: string[] = [];
+
+  // Check for deprecated options
+  const deprecated = ["maxContextBullets", "enableEmbeddings"];
+  for (const opt of deprecated) {
+    if ((config as any)[opt] !== undefined) {
+      configIssues.push(`Deprecated option: ${opt}`);
+    }
+  }
+
+  // Check paths are absolute or use tilde expansion
+  const pathFields = ["playbookPath", "diaryDir", "cassPath"];
+  for (const field of pathFields) {
+    const value = (config as any)[field];
+    if (value && typeof value === "string") {
+      if (!value.startsWith("/") && !value.startsWith("~") && value !== "cass") {
+        configIssues.push(`${field} should be absolute path`);
+      }
+    }
+  }
+
+  // Validate threshold values
+  if (config.dedupSimilarityThreshold < 0 || config.dedupSimilarityThreshold > 1) {
+    configIssues.push("dedupSimilarityThreshold should be 0-1");
+  }
+  if (config.pruneHarmfulThreshold < 0) {
+    configIssues.push("pruneHarmfulThreshold should be non-negative");
+  }
+
+  if (configIssues.length > 0) {
+    checks.push({
+      category: "Self-Test",
+      item: "Config Validation",
+      status: "warn",
+      message: `${configIssues.length} issue(s) found`,
+      details: { issues: configIssues },
+    });
+  } else {
+    checks.push({
+      category: "Self-Test",
+      item: "Config Validation",
+      status: "pass",
+      message: "Config valid",
+      details: { schemaVersion: config.schema_version },
+    });
+  }
+
+  // 5. LLM/EMBEDDING SYSTEM
+  const availableProviders = getAvailableProviders();
+  const currentProvider = config.provider;
+  const hasCurrentProvider = availableProviders.includes(currentProvider);
+
+  if (availableProviders.length === 0) {
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: "fail",
+      message: "No API keys configured",
+      details: { availableProviders: [], currentProvider },
+    });
+  } else if (!hasCurrentProvider) {
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: "warn",
+      message: `Current provider (${currentProvider}) not available, have: ${availableProviders.join(", ")}`,
+      details: { availableProviders, currentProvider },
+    });
+  } else {
+    // Check for API key validity (format check, not actual API call)
+    try {
+      validateApiKey(currentProvider);
+      checks.push({
+        category: "Self-Test",
+        item: "LLM System",
+        status: "pass",
+        message: `${currentProvider} (${config.model})`,
+        details: {
+          availableProviders,
+          currentProvider,
+          model: config.model,
+          semanticSearchEnabled: config.semanticSearchEnabled
+        },
+      });
+    } catch (err: any) {
+      checks.push({
+        category: "Self-Test",
+        item: "LLM System",
+        status: "warn",
+        message: `${currentProvider}: ${err.message}`,
+        details: { availableProviders, currentProvider, error: err.message },
+      });
+    }
+  }
+
+  return checks;
 }
 
 export async function doctorCommand(options: { json?: boolean; fix?: boolean }): Promise<void> {
