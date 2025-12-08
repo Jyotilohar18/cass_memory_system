@@ -4,7 +4,6 @@
 
 import path from "node:path";
 import { z } from "zod";
-import { generateObject } from "ai";
 import {
   Config,
   DiaryEntry,
@@ -14,7 +13,7 @@ import {
   PlaybookDelta,
   PlaybookDeltaSchema,
 } from "./types.js";
-import { getModel, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
+import { runReflector, truncateForPrompt } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
 import { truncate } from "./utils.js";
 
@@ -52,7 +51,8 @@ function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
 
   const lines: string[] = [];
   for (const [category, catBullets] of byCategory) {
-    lines.push(`\n## ${category}`);
+    lines.push(`
+## ${category}`);
     for (const b of catBullets) {
       const maturity =
         b.maturity === "proven" ? "★" : b.maturity === "established" ? "●" : "○";
@@ -79,35 +79,40 @@ function formatDiaryForPrompt(diary: DiaryEntry): string {
   sections.push(`- Timestamp: ${diary.timestamp}`);
 
   if (diary.accomplishments.length > 0) {
-    sections.push(`\n## Accomplishments`);
+    sections.push(`
+## Accomplishments`);
     for (const a of diary.accomplishments) {
       sections.push(`- ${a}`);
     }
   }
 
   if (diary.decisions.length > 0) {
-    sections.push(`\n## Decisions Made`);
+    sections.push(`
+## Decisions Made`);
     for (const d of diary.decisions) {
       sections.push(`- ${d}`);
     }
   }
 
   if (diary.challenges.length > 0) {
-    sections.push(`\n## Challenges Encountered`);
+    sections.push(`
+## Challenges Encountered`);
     for (const c of diary.challenges) {
       sections.push(`- ${c}`);
     }
   }
 
   if (diary.keyLearnings.length > 0) {
-    sections.push(`\n## Key Learnings`);
+    sections.push(`
+## Key Learnings`);
     for (const k of diary.keyLearnings) {
       sections.push(`- ${k}`);
     }
   }
 
   if (diary.preferences.length > 0) {
-    sections.push(`\n## User Preferences`);
+    sections.push(`
+## User Preferences`);
     for (const p of diary.preferences) {
       sections.push(`- ${p}`);
     }
@@ -249,32 +254,6 @@ function deduplicateDeltas(
 /** Maximum deltas to collect before stopping iteration */
 const MAX_DELTAS = 20;
 
-/**
- * Determine if reflector should exit early (skip remaining iterations).
- * 
- * Exit conditions:
- * 1. No new deltas this iteration → LLM has exhausted insights
- * 2. Already have MAX_DELTAS (20) → Diminishing returns
- * 3. Reached maxReflectorIterations → Hard limit
- * 
- * This saves LLM calls when early iterations capture everything.
- * 
- * @param iteration - Current iteration (0-indexed)
- * @param deltasThisIteration - Number of new deltas from this iteration
- * @param totalDeltas - Total deltas accumulated so far
- * @param config - Configuration with maxReflectorIterations
- * @returns true if should stop iterating, false to continue
- * 
- * @example
- * // Iteration 0: 15 deltas → continue (false)
- * shouldExitEarly(0, 15, 15, config) // → false
- * 
- * // Iteration 1: 0 deltas → exit (true)
- * shouldExitEarly(1, 0, 15, config) // → true
- * 
- * // Iteration 0: 12 deltas, then iteration 1: 8 deltas → exit (hit max 20)
- * shouldExitEarly(1, 8, 20, config) // → true
- */
 export function shouldExitEarly(
   iteration: number,
   deltasThisIteration: number,
@@ -283,22 +262,44 @@ export function shouldExitEarly(
 ): boolean {
   const maxIterations = config.maxReflectorIterations ?? 3;
 
-  // Condition 1: No new deltas this iteration - LLM has exhausted insights
   if (deltasThisIteration === 0) {
     return true;
   }
 
-  // Condition 2: Hit max delta limit - diminishing returns
   if (totalDeltas >= MAX_DELTAS) {
     return true;
   }
 
-  // Condition 3: Reached max iterations (note: iteration is 0-indexed)
   if (iteration >= maxIterations - 1) {
     return true;
   }
 
   return false;
+}
+
+// ============================================================================ 
+// REGEX FALLBACK
+// ============================================================================ 
+
+function extractDeltasRegex(diary: DiaryEntry): PlaybookDelta[] {
+  const deltas: PlaybookDelta[] = [];
+  
+  for (const learning of diary.keyLearnings) {
+      if (learning.length > 10) {
+          deltas.push({
+              type: "add",
+              bullet: {
+                  category: "general",
+                  content: learning,
+                  scope: "global",
+                  kind: "workflow_rule"
+              },
+              reason: "Regex extraction from key learnings",
+              sourceSession: diary.sessionPath
+          });
+      }
+  }
+  return deltas;
 }
 
 // ============================================================================ 
@@ -308,81 +309,38 @@ export function shouldExitEarly(
 /**
  * Multi-iteration reflection on a session diary.
  * Implements ACE pattern: Generator → Reflector → Curator → Validator
- * 
- * WHY MULTI-ITERATION: First pass catches obvious insights.
- * Subsequent passes catch nuances that might be missed.
- * 
- * @param diary - Structured diary entry from the session
- * @param playbook - Current playbook for context
- * @param config - Configuration including maxReflectorIterations
- * @returns Array of PlaybookDelta ready for curator/validator
  */
 export async function reflectOnSession(
   diary: DiaryEntry,
   playbook: Playbook,
   config: Config
 ): Promise<PlaybookDelta[]> {
+  const provider = (config.llm?.provider ?? config.provider);
+  if (provider === "none") {
+      return extractDeltasRegex(diary);
+  }
+
   const allDeltas: PlaybookDelta[] = [];
   const maxIterations = config.maxReflectorIterations ?? 3;
 
   // Prepare context
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
-  const diaryContext = formatDiaryForPrompt(diary);
   const cassHistory = await getCassHistoryForDiary(diary, config);
 
   // Multi-iteration loop
   for (let iteration = 0; iteration < maxIterations; iteration++) {
-    // Build iteration note
-    let iterationNote = "";
-    if (iteration === 0) {
-      iterationNote =
-        "This is the FIRST pass. Focus on obvious, high-value insights.";
-    } else if (allDeltas.length > 0) {
-      const previousSummary = allDeltas
-        .map((d: PlaybookDelta) => {
-          if (d.type === "add") return `- ADD: ${d.bullet.content.slice(0, 60)}...`;
-          if (d.type === "helpful") return `- HELPFUL: bullet ${d.bulletId}`;
-          if (d.type === "harmful") return `- HARMFUL: bullet ${d.bulletId}`;
-          if (d.type === "replace") return `- REPLACE: bullet ${d.bulletId}`;
-          if (d.type === "deprecate") return `- DEPRECATE: bullet ${d.bulletId}`;
-          if (d.type === "merge") return `- MERGE: bullets ${d.bulletIds.join(", ")}`;
-          return `- ${(d as PlaybookDelta).type.toUpperCase()}`;
-        })
-        .join("\n");
-
-      iterationNote = `This is iteration ${iteration + 1}. Previous passes found:
-${previousSummary}
-
-Now look DEEPER. What subtle patterns did we miss? What edge cases? What nuances?
-Don't repeat what's already captured.`;
-    }
-
-    // Build prompt
-    const prompt = fillPrompt(PROMPTS.reflector, {
-      existingBullets,
-      diary: diaryContext,
-      cassHistory: truncateForPrompt(cassHistory, 10000),
-      iterationNote,
-    });
-
     try {
-      // Cast to explicit type for getModel
-      const modelConfig = {
-        provider: config.provider,
-        model: config.model,
-        apiKey: config.apiKey
-      };
-      const model = getModel(modelConfig);
-
-      const { object } = await generateObject({
-        model,
-        schema: ReflectorOutputSchema,
-        prompt,
-        temperature: 0.4, // Moderate creativity for insight generation
-      });
+      const object = await runReflector(
+        ReflectorOutputSchema,
+        diary,
+        existingBullets,
+        cassHistory,
+        iteration,
+        config
+      );
 
       // Normalize deltas - inject sourceSession for add deltas
-      const validDeltas = object.deltas.map((d: PlaybookDelta) => {
+      const validDeltas = (object.deltas as PlaybookDelta[]).map((d) => {
         if (d.type === "add") {
           return { ...d, sourceSession: diary.sessionPath };
         }
@@ -405,7 +363,6 @@ Don't repeat what's already captured.`;
       }
     } catch (error) {
       console.error(`[reflect] LLM call failed on iteration ${iteration}: ${error}`);
-      // Continue to next iteration or exit if first
       if (iteration === 0) {
         return [];
       }

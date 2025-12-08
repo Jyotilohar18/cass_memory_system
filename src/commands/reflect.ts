@@ -19,9 +19,16 @@ export async function reflectCommand(
     agent?: string;
     dryRun?: boolean;
     json?: boolean;
+    llm?: boolean;
   } = {}
 ): Promise<void> {
   const config = await loadConfig();
+  
+  // Handle LLM opt-in
+  if (!options.llm) {
+      config.provider = "none" as any;
+      if (config.llm) config.llm.provider = "none" as any;
+  }
   
   const globalPath = expandPath(config.playbookPath);
   const logPath = expandPath(path.join(config.diaryDir, "../reflections/processed.log"));
