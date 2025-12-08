@@ -151,7 +151,12 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
 
 export async function serveCommand(options: { port?: number; host?: string } = {}): Promise<void> {
   const port = options.port || Number(process.env.MCP_HTTP_PORT) || 8765;
+  // Default strictly to localhost loopback for security
   const host = options.host || process.env.MCP_HTTP_HOST || "127.0.0.1";
+
+  if (host === "0.0.0.0" && process.env.NODE_ENV !== "development") {
+    warn("Warning: Binding to 0.0.0.0 exposes the server to the network. Ensure this is intended.");
+  }
 
   const server = http.createServer(async (req, res) => {
     if (req.method !== "POST") {
