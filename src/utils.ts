@@ -14,7 +14,8 @@ const execAsync = promisify(exec);
 export function expandPath(p: string): string {
   if (!p) return "";
   if (p.startsWith("~")) {
-    return path.join(os.homedir(), p.slice(1));
+    const home = process.env.HOME || os.homedir();
+    return path.join(home, p.slice(1));
   }
   return p;
 }
@@ -308,7 +309,8 @@ export function generateBulletId(): string {
 }
 
 export function generateDiaryId(sessionPath: string): string {
-  const hash = hashContent(sessionPath + Date.now());
+  const input = `${sessionPath}-${Date.now()}-${process.hrtime.bigint()}-${Math.random()}`;
+  const hash = hashContent(input);
   return `diary-${hash}`;
 }
 

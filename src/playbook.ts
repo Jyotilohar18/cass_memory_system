@@ -70,11 +70,8 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
     const result = PlaybookSchema.safeParse(raw);
     
     if (!result.success) {
-      warn(`Playbook validation failed for ${expanded}: ${result.error.message}`);
-      const backupPath = `${expanded}.backup.${Date.now()}`;
-      await fs.rename(expanded, backupPath);
-      warn(`Backed up corrupt playbook to ${backupPath} and creating new one.`);
-      return createEmptyPlaybook();
+      logError(`Playbook validation failed for ${expanded}: ${result.error.message}`);
+      throw new Error(`Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`);
     }
     
     return result.data;
@@ -82,7 +79,7 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
     if (err.code === "ENOENT") {
       return createEmptyPlaybook();
     }
-    logError(`Failed to load playbook ${expanded}: ${err.message}`);
+    // Propagate validation errors so the process stops rather than overwriting data
     throw err;
   }
 }

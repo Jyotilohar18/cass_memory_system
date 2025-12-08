@@ -1,14 +1,14 @@
-import { execFile, spawn, execSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { 
   CassHit, 
-  CassHitSchema,
-  CassTimelineGroup,
+  CassHitSchema, 
+  Config,
   CassTimelineResult
 } from "./types.js";
 import { log, error } from "./utils.js";
-import { sanitize } from "./security.js";
-import { loadConfig, getSanitizeConfig } from "./config.js";
+import { sanitize, compileExtraPatterns } from "./sanitize.js";
+import { getSanitizeConfig } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,8 +28,9 @@ export const CASS_EXIT_CODES = {
 
 export function cassAvailable(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} --version`, { stdio: "pipe" });
-    return true;
+    // Use spawnSync to avoid shell injection vulnerabilities
+    const result = spawnSync(cassPath, ["--version"], { stdio: "pipe" });
+    return result.status === 0;
   } catch {
     return false;
   }
@@ -37,13 +38,11 @@ export function cassAvailable(cassPath = "cass"): boolean {
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} health`, { stdio: "pipe" });
-    return false;
+    const result = spawnSync(cassPath, ["health"], { stdio: "pipe" });
+    return result.status === 0 ? false : true;
   } catch (err: any) {
-    if (err.status === CASS_EXIT_CODES.INDEX_MISSING || err.status === 1) {
-      return true;
-    }
-    return false;
+    // If execution fails entirely (e.g. command not found), assume we need index/setup
+    return true;
   }
 }
 
@@ -81,7 +80,8 @@ export interface CassSearchOptions {
 export async function cassSearch(
   query: string,
   options: CassSearchOptions = {},
-  cassPath = "cass"
+  cassPath = "cass",
+  config?: Config 
 ): Promise<CassHit[]> {
   const args = ["search", query, "--robot"]; 
   
@@ -104,7 +104,26 @@ export async function cassSearch(
     
     const rawHits = JSON.parse(stdout);
     // Validate and parse with Zod
-    return rawHits.map((h: any) => CassHitSchema.parse(h));
+    let hits = rawHits.map((h: any) => CassHitSchema.parse(h));
+
+    // Apply sanitization to search results if config provided
+    if (config && config.sanitization.enabled) {
+      const sanitizeConfig = getSanitizeConfig(config);
+      const compiledPatterns = compileExtraPatterns(sanitizeConfig.extraPatterns || []);
+      
+      const runtimeSanitizeConfig = {
+        enabled: true,
+        extraPatterns: compiledPatterns,
+        auditLog: sanitizeConfig.auditLog
+      };
+
+      hits = hits.map((hit: CassHit) => ({
+        ...hit,
+        snippet: sanitize(hit.snippet, runtimeSanitizeConfig)
+      }));
+    }
+
+    return hits;
   } catch (err: any) {
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return [];
     throw err;
@@ -116,7 +135,8 @@ export async function cassSearch(
 export async function safeCassSearch(
   query: string,
   options: CassSearchOptions = {},
-  cassPath = "cass"
+  cassPath = "cass",
+  config?: Config
 ): Promise<CassHit[]> {
   if (!cassAvailable(cassPath)) {
     log("cass not available, skipping search", true);
@@ -124,16 +144,7 @@ export async function safeCassSearch(
   }
 
   try {
-    const hits = await cassSearch(query, options, cassPath);
-    
-    // Sanitize hits
-    const config = await loadConfig();
-    const sanitizeConfig = getSanitizeConfig(config);
-    
-    return hits.map(hit => ({
-      ...hit,
-      snippet: sanitize(hit.snippet, sanitizeConfig)
-    }));
+    return await cassSearch(query, options, cassPath, config);
   } catch (err: any) {
     const exitCode = err.code;
     
@@ -141,16 +152,7 @@ export async function safeCassSearch(
       log("Index missing, rebuilding...", true);
       try {
         await cassIndex(cassPath);
-        const hits = await cassSearch(query, options, cassPath);
-        
-        // Sanitize hits after retry
-        const config = await loadConfig();
-        const sanitizeConfig = getSanitizeConfig(config);
-        
-        return hits.map(hit => ({
-          ...hit,
-          snippet: sanitize(hit.snippet, sanitizeConfig)
-        }));
+        return await cassSearch(query, options, cassPath, config);
       } catch (retryErr) {
         error(`Recovery failed: ${retryErr}`);
         return [];
@@ -161,16 +163,7 @@ export async function safeCassSearch(
       log("Search timed out, retrying with reduced limit...", true);
       const reducedOptions = { ...options, limit: Math.max(1, Math.floor((options.limit || 10) / 2)) };
       try {
-        const hits = await cassSearch(query, reducedOptions, cassPath);
-        
-        // Sanitize hits after retry
-        const config = await loadConfig();
-        const sanitizeConfig = getSanitizeConfig(config);
-        
-        return hits.map(hit => ({
-          ...hit,
-          snippet: sanitize(hit.snippet, sanitizeConfig)
-        }));
+        return await cassSearch(query, reducedOptions, cassPath, config);
       } catch {
         return [];
       }
@@ -186,17 +179,28 @@ export async function safeCassSearch(
 export async function cassExport(
   sessionPath: string,
   format: "markdown" | "json" | "text" = "markdown",
-  cassPath = "cass"
+  cassPath = "cass",
+  config?: Config
 ): Promise<string | null> {
   const args = ["export", sessionPath, "--format", format];
   
   try {
     const { stdout } = await execFileAsync(cassPath, args, { maxBuffer: 50 * 1024 * 1024 });
     
-    // Sanitize export output
-    const config = await loadConfig();
-    const sanitizeConfig = getSanitizeConfig(config);
-    return sanitize(stdout, sanitizeConfig);
+    if (config && config.sanitization.enabled) {
+      const sanitizeConfig = getSanitizeConfig(config);
+      const compiledPatterns = compileExtraPatterns(sanitizeConfig.extraPatterns || []);
+      
+      const runtimeSanitizeConfig = {
+        enabled: true,
+        extraPatterns: compiledPatterns,
+        auditLog: sanitizeConfig.auditLog
+      };
+      
+      return sanitize(stdout, runtimeSanitizeConfig);
+    }
+
+    return stdout;
   } catch (err: any) {
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return null;
     error(`Export failed: ${err.message}`);
@@ -210,17 +214,28 @@ export async function cassExpand(
   sessionPath: string,
   lineNumber: number,
   contextLines = 3,
-  cassPath = "cass"
+  cassPath = "cass",
+  config?: Config
 ): Promise<string | null> {
   const args = ["expand", sessionPath, "-n", lineNumber.toString(), "-C", contextLines.toString(), "--robot"];
   
   try {
     const { stdout } = await execFileAsync(cassPath, args);
     
-    // Sanitize expanded output
-    const config = await loadConfig();
-    const sanitizeConfig = getSanitizeConfig(config);
-    return sanitize(stdout, sanitizeConfig);
+    if (config && config.sanitization.enabled) {
+      const sanitizeConfig = getSanitizeConfig(config);
+      const compiledPatterns = compileExtraPatterns(sanitizeConfig.extraPatterns || []);
+      
+      const runtimeSanitizeConfig = {
+        enabled: true,
+        extraPatterns: compiledPatterns,
+        auditLog: sanitizeConfig.auditLog
+      };
+      
+      return sanitize(stdout, runtimeSanitizeConfig);
+    }
+
+    return stdout;
   } catch (err: any) {
     return null;
   }

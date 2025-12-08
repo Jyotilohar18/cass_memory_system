@@ -277,7 +277,7 @@ export function fillPrompt(
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\{${key}\}`, "g"), () => value);
+    result = result.replace(new RegExp(`\{${key}\}`, "g"), value);
   }
   return result;
 }
@@ -298,6 +298,8 @@ export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
+  totalTimeoutMs: 60000, // Added
+  perOperationTimeoutMs: 30000, // Added
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
@@ -311,14 +313,38 @@ export const LLM_RETRY_CONFIG = {
   ]
 };
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, operationName: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operationName} timed out after ${ms}ms`));
+    }, ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
+
 export async function llmWithRetry<T>(
   operation: () => Promise<T>,
   operationName: string
 ): Promise<T> {
+  const startTime = Date.now();
   let attempt = 0;
+  
   while (true) {
     try {
-      return await operation();
+      // Enforce total timeout check before attempt
+      const elapsed = Date.now() - startTime;
+      if (elapsed > LLM_RETRY_CONFIG.totalTimeoutMs) {
+        throw new Error(`${operationName} exceeded total timeout ceiling of ${LLM_RETRY_CONFIG.totalTimeoutMs}ms`);
+      }
+
+      // Enforce per-operation timeout
+      return await withTimeout(operation(), LLM_RETRY_CONFIG.perOperationTimeoutMs, operationName);
     } catch (err: any) {
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
@@ -398,7 +424,7 @@ export async function generateObjectSafe<T>(
 
       const temperature = attempt > 1 ? 0.35 : 0.3;
 
-      const result = await monitoredGenerateObject<T>({
+      const result = await monitoredGenerateObject<T> ({
         model,
         schema,
         prompt: enhancedPrompt,
@@ -444,7 +470,7 @@ export async function extractDiary<T>(
   });
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<T>({
+    const result = await monitoredGenerateObject<T> ({
       model,
       schema,
       prompt,
@@ -494,7 +520,7 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
   });
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<T>({
+    const result = await monitoredGenerateObject<T> ({
       model,
       schema,
       prompt,
@@ -548,7 +574,7 @@ export async function runValidator(
   });
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<ValidatorOutput>({
+    const result = await monitoredGenerateObject<ValidatorOutput> ({
       model,
       schema: ValidatorOutputSchema,
       prompt,
@@ -581,7 +607,7 @@ export async function generateContext(
   config: Config
 ): Promise<string> {
   const llmConfig: LLMConfig = {
-    provider: config.llm?.provider ?? config.provider,
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
     apiKey: config.apiKey
   };
@@ -596,7 +622,7 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<{ briefing: string }>({
+    const result = await monitoredGenerateObject<{ briefing: string }> ({
       model,
       schema: z.object({ briefing: z.string() }),
       prompt,
@@ -611,7 +637,7 @@ export async function generateSearchQueries(
   config: Config
 ): Promise<string[]> {
   const llmConfig: LLMConfig = {
-    provider: config.llm?.provider ?? config.provider,
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
     apiKey: config.apiKey
   };
@@ -629,7 +655,7 @@ Generate 3-5 diverse search queries to find relevant information:
 Make queries specific enough to be useful but broad enough to match variations.`;
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<{ queries: string[] }>({
+    const result = await monitoredGenerateObject<{ queries: string[] }> ({
       model,
       schema: z.object({ queries: z.array(z.string()).max(5) }),
       prompt,
@@ -685,7 +711,7 @@ export async function llmWithFallback<T>(
     try {
       const llmModel = getModel({ provider, model });
 
-      const result = await monitoredGenerateObject<T>({
+      const result = await monitoredGenerateObject<T> ({
         model: llmModel,
         schema,
         prompt,
