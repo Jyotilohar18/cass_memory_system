@@ -1,117 +1,58 @@
-import { describe, it, expect, afterEach, afterAll } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 
-import * as actualDiary from "../src/diary.js";
-import * as actualReflect from "../src/reflect.js";
-import * as actualValidate from "../src/validate.js";
-import * as actualCurate from "../src/curate.js";
-import * as actualCass from "../src/cass.js";
-
-import { createTestBullet } from "./helpers/factories.js";
+import { reflectCommand } from "../src/commands/reflect.js";
 import { withTempCassHome, writeFileInDir } from "./helpers/temp.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
 import { getProcessedLogPath } from "../src/tracking.js";
-import { mock } from "bun:test";
 
-const mockDiary = {
-  id: "diary-1",
-  sessionPath: "SESSION",
-  timestamp: new Date().toISOString(),
-  agent: "tester",
-  workspace: "default",
-  status: "success",
-  accomplishments: [],
-  decisions: [],
-  challenges: [],
-  preferences: [],
-  keyLearnings: [],
-  tags: [],
-  searchAnchors: [],
-  relatedSessions: [],
-};
-
-const mockDelta =           {
-            type: "add",
-            bullet: { content: "Reflect Rule", category: "testing" },
-            reason: "stubbed reflection"
-          };
-
-const curatedPlaybook = createEmptyPlaybook("integration");
-curatedPlaybook.bullets = [createTestBullet({ content: mockDelta.bullet.content, category: mockDelta.bullet.category })];
-
-describe("reflectCommand integration", () => {
-  const originalCwd = process.cwd();
+describe("reflectCommand integration (real modules, stubbed via env)", () => {
+  const originalEnv = { ...process.env };
 
   afterEach(() => {
-    process.chdir(originalCwd);
-    // Restore real modules so later tests see actual implementations
-    mock.module("../src/diary.js", () => actualDiary);
-    mock.module("../src/reflect.js", () => actualReflect);
-    mock.module("../src/validate.js", () => actualValidate);
-    mock.module("../src/curate.js", () => actualCurate);
-    mock.module("../src/cass.js", () => actualCass);
-    mock.restore();
+    // Ensure no test-specific env leaks into other suites
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
   });
 
-  it.serial("processes a provided session, writes playbook, and records processed log", async () => {
+  it("processes a provided session, writes playbook, and records processed log", async () => {
     await withTempCassHome(async (env) => {
-      process.chdir(env.home);
+      // Make sure HOME points at isolated dir for this test
+      process.env.HOME = env.home;
 
-      // Seed empty playbook at default path
+      // Seed an empty playbook at the default path
       await fs.mkdir(path.dirname(env.playbookPath), { recursive: true });
       await fs.writeFile(env.playbookPath, yaml.stringify(createEmptyPlaybook("integration-test")));
 
-      // Create a fake session file
-      const sessionPath = await writeFileInDir(env.home, "sessions/session-1.jsonl", "dummy session content");
+      // Write a minimal config that disables validation (avoids LLM) and points to our playbook
+      const testConfig = {
+        playbookPath: env.playbookPath,
+        cassPath: "__missing__", // forces cassExport fallback to file read
+        validationEnabled: false,
+        provider: "anthropic",
+        model: "test-model",
+        sessionLookbackDays: 1
+      };
+      await fs.writeFile(env.configPath, JSON.stringify(testConfig, null, 2));
 
-      // Patch mocks to use this session path
-      mockDiary.sessionPath = sessionPath;
-      (mockDelta as any).sourceSession = sessionPath;
+      // Create a fake session file with enough content for reflection
+      const sessionContent = "coding session content with plenty of detail to exceed the 50 character threshold used by the reflector";
+      const sessionPath = await writeFileInDir(env.home, "sessions/session-1.jsonl", sessionContent);
 
-      // Setup scoped mocks for heavy dependencies
-      const mockGenerateDiary = mock(() => ({ ...mockDiary }));
-      const mockReflectOnSession = mock(() => [mockDelta]);
-      const mockValidateDelta = mock(async () => ({ valid: true }));
-      const mockCuratePlaybook = mock(() => ({
-        applied: 1,
-        skipped: 0,
-        inversions: [],
-        promotions: [],
-        playbook: curatedPlaybook,
-      }));
+      // Stub reflector output so no LLM call occurs
+      process.env.CM_REFLECTOR_STUBS = JSON.stringify([
+        {
+          deltas: [
+            { type: "add", bullet: { content: "Reflect Rule", category: "testing" }, reason: "stubbed reflection" }
+          ]
+        }
+      ]);
 
-      mock.module("../src/diary.js", () => ({
-        generateDiary: mockGenerateDiary,
-      }));
-
-      mock.module("../src/reflect.js", () => ({
-        reflectOnSession: mockReflectOnSession,
-      }));
-
-      mock.module("../src/validate.js", () => ({
-        validateDelta: mockValidateDelta,
-      }));
-
-      mock.module("../src/curate.js", () => ({
-        curatePlaybook: mockCuratePlaybook,
-      }));
-
-      mock.module("../src/cass.js", () => ({
-        findUnprocessedSessions: async () => [],
-        cassExport: async () => "this is synthetic session content that is definitely more than fifty characters long",
-        cassExpand: async () => "expanded context",
-        cassTimeline: async () => ({ groups: [] }),
-        cassAvailable: () => true,
-        cassSearch: async () => [],
-        cassStats: async () => null,
-        cassIndex: async () => undefined,
-        safeCassSearch: async () => [],
-      }));
-
-      const { reflectCommand } = await import("../src/commands/reflect.js");
-
+      // Run the command against the single session
       await reflectCommand({ session: sessionPath, json: true });
 
       // Verify playbook was updated with curated bullet
@@ -125,8 +66,4 @@ describe("reflectCommand integration", () => {
       expect(logContent).toContain(sessionPath);
     });
   });
-});
-
-afterAll(() => {
-  mock.restore();
 });

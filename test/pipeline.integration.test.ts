@@ -10,10 +10,9 @@ import { __resetReflectorStubsForTest } from "../src/llm.js";
 const diaryFixturePath = path.join(process.cwd(), "test/fixtures/diary-success.json");
 
 describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () => {
-  // Ensure no lingering module mocks from other suites
-  mock.restore();
-
   beforeEach(() => {
+    // Ensure no lingering module mocks from other suites
+    mock.restore();
     __resetReflectorStubsForTest();
   });
 
@@ -22,7 +21,7 @@ describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () =>
     __resetReflectorStubsForTest();
   });
 
-  test("applies unique add deltas into playbook", async () => {
+  test.serial("applies unique add deltas into playbook", async () => {
     const diaryRaw = JSON.parse(fs.readFileSync(diaryFixturePath, "utf-8"));
     const diary = DiaryEntrySchema.parse(diaryRaw);
     const playbook = createTestPlaybook();
@@ -56,7 +55,7 @@ describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () =>
     expect(contents).toContain("Rule A");
   });
 
-  test("harmful deltas trigger inversion to anti-pattern", async () => {
+  test.serial("harmful deltas trigger inversion to anti-pattern", async () => {
     const diaryRaw = JSON.parse(fs.readFileSync(diaryFixturePath, "utf-8"));
     const diary = DiaryEntrySchema.parse(diaryRaw);
 

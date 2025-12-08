@@ -9,9 +9,8 @@ import { __resetReflectorStubsForTest } from "../src/llm.js";
 const fixturePath = path.join(process.cwd(), "test/fixtures/diary-success.json");
 
 describe("Reflector pipeline (integration, stubbed LLM)", () => {
-  mock.restore();
-
   beforeEach(() => {
+    mock.restore();
     __resetReflectorStubsForTest();
   });
 
