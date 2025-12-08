@@ -378,6 +378,208 @@ export function truncate(text: string, maxLen: number): string {
   return text.slice(0, maxLen - 3) + "...";
 }
 
+/**
+ * Truncation strategy for LLM context.
+ * - "head": Keep the beginning (default)
+ * - "tail": Keep the end
+ * - "middle": Keep start and end, remove middle (best for preserving context)
+ */
+export type TruncateStrategy = "head" | "tail" | "middle";
+
+export interface TruncateForContextOptions {
+  /** Maximum characters (default: 4000, roughly 1000 tokens) */
+  maxChars?: number;
+  /** Maximum estimated tokens (overrides maxChars if set, uses ~4 chars/token) */
+  maxTokens?: number;
+  /** Truncation strategy (default: "middle") */
+  strategy?: TruncateStrategy;
+  /** Preserve code blocks when possible (default: true) */
+  preserveCodeBlocks?: boolean;
+  /** Marker to insert at truncation point (default: "\n\n[...truncated...]\n\n") */
+  truncationMarker?: string;
+}
+
+/**
+ * Truncate large content for LLM context windows.
+ *
+ * More sophisticated than simple truncation:
+ * - Estimates token count (~4 chars per token)
+ * - Supports different strategies (head, tail, middle)
+ * - Tries to break at paragraph/sentence boundaries
+ * - Can preserve start and end context (middle strategy)
+ *
+ * @param text - Content to truncate
+ * @param options - Truncation options
+ * @returns Truncated text within token/char limits
+ *
+ * @example
+ * // Keep ~500 tokens, preserving start and end
+ * truncateForContext(longDoc, { maxTokens: 500, strategy: "middle" });
+ *
+ * // Keep first 2000 chars
+ * truncateForContext(longDoc, { maxChars: 2000, strategy: "head" });
+ */
+export function truncateForContext(
+  text: string,
+  options: TruncateForContextOptions = {}
+): string {
+  if (!text) return "";
+
+  const {
+    maxChars: inputMaxChars,
+    maxTokens,
+    strategy = "middle",
+    preserveCodeBlocks = true,
+    truncationMarker = "\n\n[...truncated...]\n\n"
+  } = options;
+
+  // Calculate max chars from tokens if provided (approx 4 chars per token)
+  const maxChars = maxTokens ? maxTokens * 4 : (inputMaxChars ?? 4000);
+
+  // Already within limits
+  if (text.length <= maxChars) return text;
+
+  // Account for truncation marker in budget
+  const markerLen = truncationMarker.length;
+  const availableChars = maxChars - markerLen;
+
+  if (availableChars <= 0) {
+    return text.slice(0, maxChars);
+  }
+
+  switch (strategy) {
+    case "head":
+      return truncateHead(text, availableChars, preserveCodeBlocks) + truncationMarker.trim();
+
+    case "tail":
+      return truncationMarker.trim() + truncateTail(text, availableChars, preserveCodeBlocks);
+
+    case "middle":
+    default:
+      return truncateMiddle(text, availableChars, truncationMarker, preserveCodeBlocks);
+  }
+}
+
+/**
+ * Truncate from the end, trying to break at paragraph/sentence boundary.
+ */
+function truncateHead(text: string, maxChars: number, preserveCodeBlocks: boolean): string {
+  if (text.length <= maxChars) return text;
+
+  let cutPoint = maxChars;
+
+  // If we're in a code block, try to include the whole block or none
+  if (preserveCodeBlocks) {
+    const codeBlockEnd = text.lastIndexOf("```", cutPoint);
+    const codeBlockStart = text.lastIndexOf("```", codeBlockEnd - 1);
+
+    // If cut point is inside a code block, cut before it starts
+    if (codeBlockStart !== -1 && codeBlockEnd > codeBlockStart) {
+      const blockEndPos = text.indexOf("```", codeBlockEnd + 3);
+      if (blockEndPos === -1 || blockEndPos > cutPoint) {
+        // We're inside an unclosed code block, cut before it
+        cutPoint = Math.min(cutPoint, codeBlockStart);
+      }
+    }
+  }
+
+  // Try to find a good break point (paragraph, sentence, word)
+  const searchStart = Math.max(0, cutPoint - 200);
+  const searchRegion = text.slice(searchStart, cutPoint);
+
+  // Prefer paragraph break
+  const paraBreak = searchRegion.lastIndexOf("\n\n");
+  if (paraBreak !== -1 && paraBreak > searchRegion.length * 0.5) {
+    return text.slice(0, searchStart + paraBreak).trimEnd();
+  }
+
+  // Then sentence break
+  const sentenceMatch = searchRegion.match(/[.!?]\s+[A-Z]/g);
+  if (sentenceMatch) {
+    const lastSentence = searchRegion.lastIndexOf(sentenceMatch[sentenceMatch.length - 1]);
+    if (lastSentence !== -1) {
+      return text.slice(0, searchStart + lastSentence + 1).trimEnd();
+    }
+  }
+
+  // Then word break
+  const lastSpace = searchRegion.lastIndexOf(" ");
+  if (lastSpace !== -1 && lastSpace > searchRegion.length * 0.7) {
+    return text.slice(0, searchStart + lastSpace).trimEnd();
+  }
+
+  return text.slice(0, cutPoint).trimEnd();
+}
+
+/**
+ * Truncate from the beginning, keeping the end.
+ */
+function truncateTail(text: string, maxChars: number, preserveCodeBlocks: boolean): string {
+  if (text.length <= maxChars) return text;
+
+  let cutPoint = text.length - maxChars;
+
+  // If we're in a code block, try to start after it ends
+  if (preserveCodeBlocks) {
+    const searchEnd = Math.min(text.length, cutPoint + 200);
+    const codeBlockEnd = text.indexOf("```", cutPoint);
+
+    if (codeBlockEnd !== -1 && codeBlockEnd < searchEnd) {
+      // Find the closing ``` and start after it
+      const nextLine = text.indexOf("\n", codeBlockEnd + 3);
+      if (nextLine !== -1) {
+        cutPoint = nextLine + 1;
+      }
+    }
+  }
+
+  // Try to find a good break point
+  const searchEnd = Math.min(text.length, cutPoint + 200);
+  const searchRegion = text.slice(cutPoint, searchEnd);
+
+  // Prefer paragraph break
+  const paraBreak = searchRegion.indexOf("\n\n");
+  if (paraBreak !== -1 && paraBreak < searchRegion.length * 0.5) {
+    return text.slice(cutPoint + paraBreak + 2).trimStart();
+  }
+
+  // Then sentence break
+  const sentenceMatch = searchRegion.match(/[.!?]\s+[A-Z]/);
+  if (sentenceMatch && sentenceMatch.index !== undefined) {
+    return text.slice(cutPoint + sentenceMatch.index + 2).trimStart();
+  }
+
+  // Then word break
+  const firstSpace = searchRegion.indexOf(" ");
+  if (firstSpace !== -1 && firstSpace < searchRegion.length * 0.3) {
+    return text.slice(cutPoint + firstSpace + 1).trimStart();
+  }
+
+  return text.slice(cutPoint).trimStart();
+}
+
+/**
+ * Keep beginning and end, remove middle content.
+ * Best for preserving context in long documents.
+ */
+function truncateMiddle(
+  text: string,
+  maxChars: number,
+  marker: string,
+  preserveCodeBlocks: boolean
+): string {
+  if (text.length <= maxChars) return text;
+
+  // Split budget between head and tail (60/40 favoring beginning)
+  const headBudget = Math.floor((maxChars - marker.length) * 0.6);
+  const tailBudget = maxChars - marker.length - headBudget;
+
+  const headPart = truncateHead(text, headBudget, preserveCodeBlocks);
+  const tailPart = truncateTail(text, tailBudget, preserveCodeBlocks);
+
+  return headPart + marker + tailPart;
+}
+
 // --- Deprecated pattern detection ---
 
 function buildDeprecatedMatcher(pattern: string): (text: string) => boolean {
