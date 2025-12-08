@@ -27,15 +27,19 @@ import {
 } from "./utils.js";
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
+import { isSemanticallyToxic } from "./sanitize.js";
 
 // --- Interfaces ---
 
-export interface ToxicEntry {
+export interface BlockedEntry {
   id: string;
   content: string;
   reason: string;
   forgottenAt: string;
 }
+
+/** @deprecated Use BlockedEntry instead */
+export type ToxicEntry = BlockedEntry;
 
 // --- Core Functions ---
 
@@ -199,13 +203,13 @@ export async function loadPlaybookWithRecovery(
 
 // --- Cascading & Merging ---
 
-export async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
+export async function loadBlockedLog(logPath: string): Promise<BlockedEntry[]> {
   const expanded = expandPath(logPath);
   if (!(await fileExists(expanded))) return [];
 
   try {
     const content = await fs.readFile(expanded, "utf-8");
-    const entries: ToxicEntry[] = [];
+    const entries: BlockedEntry[] = [];
 
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
@@ -219,30 +223,36 @@ export async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
         }
       } catch {
         // Skip malformed lines - don't let one bad line corrupt the whole log
-        warn(`Skipping malformed line in toxic log: ${trimmed.slice(0, 50)}...`);
+        warn(`Skipping malformed line in blocked log: ${trimmed.slice(0, 50)}...`);
       }
     }
 
     return entries;
   } catch (err: any) {
-    warn(`Failed to read toxic log ${expanded}: ${err.message}`);
+    warn(`Failed to read blocked log ${expanded}: ${err.message}`);
     return [];
   }
 }
 
-export async function appendToxicLog(entry: ToxicEntry, logPath: string): Promise<void> {
+/** @deprecated Use loadBlockedLog instead */
+export const loadToxicLog = loadBlockedLog;
+
+export async function appendBlockedLog(entry: BlockedEntry, logPath: string): Promise<void> {
   const expanded = expandPath(logPath);
   await ensureDir(path.dirname(expanded));
   await fs.appendFile(expanded, JSON.stringify(entry) + "\n", "utf-8");
 }
 
-async function isSemanticallyToxic(content: string, toxicLog: ToxicEntry[]): Promise<boolean> {
+/** @deprecated Use appendBlockedLog instead */
+export const appendToxicLog = appendBlockedLog;
+
+async function isBlockedContent(content: string, blockedLog: BlockedEntry[]): Promise<boolean> {
   const hash = hashContent(content);
-  
-  for (const entry of toxicLog) {
+
+  for (const entry of blockedLog) {
     if (hashContent(entry.content) === hash) return true;
     if (jaccardSimilarity(content, entry.content) > 0.85) {
-      log(`Blocked toxic content: "${content.slice(0, 50)}"... matches blocked "${entry.content.slice(0, 50)}"...`, true);
+      log(`Blocked content: "${content.slice(0, 50)}"... matches blocked "${entry.content.slice(0, 50)}"...`, true);
       return true;
     }
   }
