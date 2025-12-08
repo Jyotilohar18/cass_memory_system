@@ -168,6 +168,11 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     let raw = "";
     req.on("data", (chunk) => {
       raw += chunk.toString();
+      if (raw.length > 1e6) { // 1MB limit
+        res.statusCode = 413;
+        res.end(JSON.stringify(buildError(null, "Payload too large", -32700)));
+        req.destroy();
+      }
     });
 
     req.on("end", async () => {
