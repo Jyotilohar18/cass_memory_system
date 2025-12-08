@@ -38,6 +38,66 @@ import {
 
 // --- Helpers ---
 
+export function formatRawSession(content: string, ext: string): string {
+  const normalizedExt = (ext.startsWith(".") ? ext : `.${ext}`).toLowerCase();
+
+  if (normalizedExt === ".md" || normalizedExt === ".markdown") {
+    return content;
+  }
+
+  if (normalizedExt === ".jsonl") {
+    if (!content.trim()) return "";
+    return content
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        try {
+          const json = JSON.parse(line);
+          const role = json.role || "[unknown]";
+          const msgContent = json.content || "[empty]";
+          return `**${role}**: ${msgContent}`;
+        } catch {
+          return `[PARSE ERROR] ${line}`;
+        }
+      })
+      .join("\n\n");
+  }
+
+  if (normalizedExt === ".json") {
+    if (!content.trim()) return "";
+    try {
+      const json = JSON.parse(content);
+      let messages: any[] = [];
+
+      if (Array.isArray(json)) {
+        messages = json;
+      } else if (json.messages && Array.isArray(json.messages)) {
+        messages = json.messages;
+      } else if (json.conversation && Array.isArray(json.conversation)) {
+        messages = json.conversation;
+      } else if (json.turns && Array.isArray(json.turns)) {
+        messages = json.turns;
+      } else {
+        return `WARNING: Unrecognized JSON structure (.${ext})\n${content}`;
+      }
+
+      if (messages.length === 0) return "";
+
+      return messages
+        .map((msg) => {
+          const role = msg.role || "[unknown]";
+          const msgContent = msg.content || "[empty]";
+          return `**${role}**: ${msgContent}`;
+        })
+        .join("\n\n");
+    } catch {
+      return `[PARSE ERROR: Invalid JSON] ${content}`;
+    }
+  }
+
+  return `WARNING: Unsupported session format (.${normalizedExt.replace(".", "")})\n${content}`;
+}
+
 function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
   const normalized = path.normalize(sessionPath);
   
@@ -252,8 +312,8 @@ export async function loadAllDiaries(diaryDir: string, limit = 100): Promise<Dia
         const json = JSON.parse(content);
         const diary = DiaryEntrySchema.parse(json);
         entries.push(diary);
-      } catch {
-        // Skip invalid entries silently
+      } catch (err: any) {
+        warn(`[Diary] Skipped invalid diary file ${file}: ${err.message}`);
       }
     }
 
