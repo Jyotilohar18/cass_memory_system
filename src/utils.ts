@@ -225,7 +225,7 @@ function validateSessionPath(value: string): string {
   }
 
   // Expand ~ to home directory
-  const expanded = (typeof expandPath === "function") ? expandPath(cleaned) : cleaned;
+  const expanded = expandPath(cleaned);
 
   // Resolve to absolute path
   const absolute = path.resolve(expanded);
@@ -1165,7 +1165,7 @@ export async function withLock<T>(filePath: string, operation: () => Promise<T>)
 }
 
 export async function atomicWrite(filePath: string, content: string): Promise<void> {
-  const expanded = expandPath(filePath);
+  const expanded = typeof expandPath === "function" ? expandPath(filePath) : path.resolve(filePath);
   await ensureDir(path.dirname(expanded));
   
   const tempPath = `${expanded}.tmp.${crypto.randomBytes(4).toString("hex")}`;
