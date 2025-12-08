@@ -104,7 +104,10 @@ const TOOL_DEFS = [
       properties: {
         query: { type: "string", description: "Search query text" },
         scope: { type: "string", enum: ["playbook", "cass", "both"], default: "both" },
-        limit: { type: "number", default: 10 }
+        limit: { type: "number", default: 10 },
+        days: { type: "number", description: "Limit cass search to lookback days" },
+        agent: { type: "string", description: "Filter cass search by agent" },
+        workspace: { type: "string", description: "Filter cass search by workspace" }
       },
       required: ["query"]
     }
@@ -251,8 +254,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const days = typeof args?.days === "number" ? args.days : 7;
       const maxSessions = typeof args?.maxSessions === "number" ? args.maxSessions : 20;
       const dryRun = Boolean(args?.dryRun);
-      const workspace = args?.workspace;
-      const singleSession = args?.session;
+      const workspace = typeof args?.workspace === "string" ? args.workspace : undefined;
+      const singleSession = typeof args?.session === "string" ? args.session : undefined;
 
       const globalPath = expandPath(config.playbookPath);
       const repoPath = expandPath(".cass/playbook.yaml");

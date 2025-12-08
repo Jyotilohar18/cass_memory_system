@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, checkAbort } from "../utils.js";
+import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, checkAbort, isPermissionError, handlePermissionError } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -144,7 +144,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
     const start = Date.now();
     try {
       // Use safeCassSearch which handles errors gracefully
-      const results = await safeCassSearch("self test query", { limit: 5 }, config.cassPath);
+      const results = await safeCassSearch("self test query", { limit: 5 }, config.cassPath, config);
       const searchTime = Date.now() - start;
 
       if (searchTime > 5000) {
@@ -624,6 +624,10 @@ export async function applyFixes(
       });
       console.log(chalk.green("  ✓ Fixed"));
     } catch (err: any) {
+      if (isPermissionError(err)) {
+        // Handle permission errors gracefully
+        await handlePermissionError(err, issue.description.split(": ")[1] || "path");
+      }
       results.push({
         id: issue.id,
         success: false,
@@ -820,5 +824,14 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
     }
   } else if (options.fix && overallStatus === "healthy") {
     console.log(chalk.green("\nSystem is healthy, no fixes needed."));
+  }
+  
+  // 6) Run Self-Test (End-to-End Smoke Tests)
+  if (!options.json) {
+    console.log(chalk.bold("\n🧪 Running Self-Test...\n"));
+    const selfTests = await runSelfTest(config);
+    for (const test of selfTests) {
+      console.log(`${statusIcon(test.status)} ${test.item}: ${test.message}`);
+    }
   }
 }
