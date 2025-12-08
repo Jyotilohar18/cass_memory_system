@@ -6,8 +6,9 @@
     "moduleResolution": "bundler",
     "moduleDetection": "force",
     "allowImportingTsExtensions": true,
+    "moduleSuffixes": [".ts", ".tsx", ".d.ts", ".js", ".jsx"],
     "noEmit": true,
-    "composite": true,
+    "composite": false,
     "strict": true,
     "downlevelIteration": true,
     "skipLibCheck": true,
@@ -15,8 +16,11 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
-    "types": [
-      "bun-types"
-    ]
-  }
+    "types": ["bun-types", "node"]
+  },
+  "exclude": [
+    "dist",
+    "node_modules",
+    "competing_proposal_plans"
+  ]
 }

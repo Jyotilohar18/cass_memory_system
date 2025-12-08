@@ -16,7 +16,6 @@ export type LLMProvider = "openai" | "anthropic" | "google";
 
 /**
  * Minimal config interface for LLM operations.
- * Full Config type will be in types.ts once implemented.
  */
 export interface LLMConfig {
   provider: LLMProvider;
@@ -38,21 +37,9 @@ const ENV_VAR_MAP: Record<LLMProvider, string> = {
 const KEY_PREFIX_MAP: Record<LLMProvider, string> = {
   openai: "sk-",
   anthropic: "sk-ant-",
-  google: "AIza", // Google API keys start with AIza
+  google: "AIza",
 };
 
-/**
- * Get the API key for a provider from environment variables.
- *
- * @param provider - The LLM provider name
- * @returns The API key string
- * @throws Error if provider is unknown or env var is not set
- *
- * @example
- * ```typescript
- * const key = getApiKey("openai");
- * ```
- */
 export function getApiKey(provider: string): string {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
@@ -74,29 +61,13 @@ export function getApiKey(provider: string): string {
   return apiKey.trim();
 }
 
-/**
- * Validate API key format (non-blocking, warnings only).
- * Does not make API calls - just checks format patterns.
- *
- * @param provider - The LLM provider name
- * @returns void - logs warnings to stderr if format looks wrong
- *
- * @example
- * ```typescript
- * validateApiKey("openai");
- * // Warning: OpenAI API key does not start with sk- - this may be incorrect
- * ```
- */
 export function validateApiKey(provider: string): void {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
   const envVar = ENV_VAR_MAP[normalized];
   if (!envVar) return;
 
   const apiKey = process.env[envVar];
-  if (!apiKey) {
-    // getApiKey will handle missing keys - don't duplicate warnings
-    return;
-  }
+  if (!apiKey) return;
 
   const expectedPrefix = KEY_PREFIX_MAP[normalized];
   if (expectedPrefix && !apiKey.startsWith(expectedPrefix)) {
@@ -105,7 +76,6 @@ export function validateApiKey(provider: string): void {
     );
   }
 
-  // Check for common placeholder patterns
   const placeholders = ["YOUR_API_KEY", "xxx", "test", "demo", "placeholder"];
   const lowerKey = apiKey.toLowerCase();
   for (const placeholder of placeholders) {
@@ -117,7 +87,6 @@ export function validateApiKey(provider: string): void {
     }
   }
 
-  // Check minimum length (most keys are 30+ chars)
   if (apiKey.length < 20) {
     console.warn(
       `Warning: ${provider} API key seems too short (${apiKey.length} chars) - this may be incorrect`
@@ -125,23 +94,9 @@ export function validateApiKey(provider: string): void {
   }
 }
 
-/**
- * Create a provider-agnostic LanguageModel instance.
- * Uses Vercel AI SDK for unified interface across providers.
- *
- * @param config - Configuration with provider and model name
- * @returns LanguageModel instance for the configured provider/model
- * @throws Error if provider is unknown or API key is not set
- *
- * @example
- * ```typescript
- * const model = getModel({ provider: "anthropic", model: "claude-sonnet-4-20250514" });
- * const { text } = await generateText({ model, prompt: "Hello!" });
- * ```
- */
-export function getModel(config: LLMConfig): LanguageModel {
+export function getModel(config: { provider: string; model: string }): LanguageModel {
   try {
-    const provider = config.provider as "openai" | "anthropic" | "google";
+    const provider = config.provider as LLMProvider;
     const apiKey = getApiKey(provider);
     
     switch (provider) {
@@ -155,23 +110,11 @@ export function getModel(config: LLMConfig): LanguageModel {
   }
 }
 
-/**
- * Check if LLM is available (API key exists) without throwing.
- * Useful for graceful degradation.
- *
- * @param provider - The LLM provider to check
- * @returns true if API key is configured
- */
 export function isLLMAvailable(provider: LLMProvider): boolean {
   const envVar = ENV_VAR_MAP[provider];
   return !!process.env[envVar];
 }
 
-/**
- * Get a list of available (configured) providers.
- *
- * @returns Array of provider names that have API keys set
- */
 export function getAvailableProviders(): LLMProvider[] {
   return (Object.keys(ENV_VAR_MAP) as LLMProvider[]).filter((provider) =>
     isLLMAvailable(provider)
@@ -180,15 +123,7 @@ export function getAvailableProviders(): LLMProvider[] {
 
 // --- Prompt Templates ---
 
-/**
- * Prompt templates for LLM operations.
- * These are tuned for structured extraction with Zod schemas.
- */
 export const PROMPTS = {
-  /**
-   * Extract structured diary from a session.
-   * Temperature: 0.3 (low for consistency)
-   */
   diary: `You are analyzing a coding agent session to extract structured insights.
 
 SESSION METADATA:
@@ -223,10 +158,6 @@ Respond with JSON matching this schema:
   "searchAnchors": string[]     // Search phrases for future retrieval
 }`,
 
-  /**
-   * Extract deltas (changes) from diary for playbook.
-   * Multi-iteration capable.
-   */
   reflector: `You are analyzing a coding session diary to extract reusable lessons for a playbook.
 
 EXISTING PLAYBOOK RULES:
@@ -255,9 +186,6 @@ Delta types:
 
 Maximum 20 deltas per reflection. Focus on quality over quantity.`,
 
-  /**
-   * Validate a proposed rule against evidence.
-   */
   validator: `You are a scientific validator checking if a proposed rule is supported by historical evidence.
 
 PROPOSED RULE:
@@ -277,16 +205,13 @@ Consider:
 
 Respond with:
 {
-  "valid": boolean,
+  "verdict": "ACCEPT" | "REJECT" | "REFINE",
   "confidence": number,  // 0.0-1.0
   "reason": string,
-  "refinedContent": string | null,  // Suggested improvement if partially valid
-  "evidence": { supporting: string[], contradicting: string[] }
+  "suggestedRefinement": string | null,  // Suggested improvement if partially valid
+  "evidence": { "supporting": string[], "contradicting": string[] }
 }`,
 
-  /**
-   * Generate pre-task context briefing.
-   */
   context: `You are preparing a context briefing for a coding task.
 
 TASK DESCRIPTION:
@@ -310,9 +235,6 @@ Create a concise briefing that:
 
 Keep the briefing actionable and under 500 words.`,
 
-  /**
-   * Audit a session for rule violations.
-   */
   audit: `You are auditing a coding session to check if established rules were followed.
 
 SESSION CONTENT:
@@ -340,32 +262,17 @@ Respond with:
 }`,
 } as const;
 
-/**
- * Fill prompt template with values.
- *
- * @param template - Prompt template with {placeholders}
- * @param values - Object with placeholder values
- * @returns Filled prompt string
- */
 export function fillPrompt(
   template: string,
   values: Record<string, string>
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+    result = result.replace(new RegExp(`\{${key}\}`, "g"), value);
   }
   return result;
 }
 
-/**
- * Truncate content to avoid token limits.
- * Keeps beginning and end, truncates middle.
- *
- * @param content - Content to truncate
- * @param maxChars - Maximum characters (default 50000)
- * @returns Truncated content
- */
 export function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) return content;
 
@@ -376,18 +283,57 @@ export function truncateForPrompt(content: string, maxChars = 50000): string {
   return `${beginning}\n\n[... ${content.length - maxChars} characters truncated ...]\n\n${ending}`;
 }
 
-/**
- * Run the reflector to extract playbook deltas from a diary entry.
- * Used by reflect.ts to generate insights from sessions.
- *
- * @param schema - Zod schema for the expected output
- * @param diary - The diary entry to reflect on
- * @param existingBullets - Formatted string of existing playbook bullets
- * @param cassHistory - Related session history from cass
- * @param iteration - Current iteration number (for multi-pass reflection)
- * @param config - Configuration with LLM settings
- * @returns Parsed output matching the provided schema
- */
+// --- Resilience Wrapper ---
+
+const LLM_RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 30000,
+  retryableErrors: [
+    "rate_limit_exceeded",
+    "server_error",
+    "timeout",
+    "overloaded",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "429",
+    "500",
+    "503"
+  ]
+};
+
+async function llmWithRetry<T>(
+  operation: () => Promise<T>,
+  operationName: string
+): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (err: any) {
+      attempt++;
+      const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => 
+        err.message?.toLowerCase().includes(e) || err.code?.toString().includes(e) || err.statusCode?.toString().includes(e)
+      );
+      
+      if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
+        throw err;
+      }
+      
+      const delay = Math.min(
+        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), 
+        LLM_RETRY_CONFIG.maxDelayMs
+      );
+      
+      // Using console directly as log utility imports might cycle (simplified)
+      console.warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+// --- Operations ---
+
 export async function extractDiary<T>(
   schema: z.ZodSchema<T>,
   sessionContent: string,
@@ -410,14 +356,15 @@ export async function extractDiary<T>(
     content: truncatedContent
   });
 
-  const { object } = await generateObject({
-    model,
-    schema,
-    prompt,
-    temperature: 0.3,
-  });
-
-  return object;
+  return llmWithRetry(async () => {
+    const { object } = await generateObject({
+      model,
+      schema,
+      prompt,
+      temperature: 0.3,
+    });
+    return object;
+  }, "extractDiary");
 }
 
 export async function runReflector<T>(
@@ -428,7 +375,6 @@ export async function runReflector<T>(
   iteration: number,
   config: Config
 ): Promise<T> {
-  // Build LLM config from Config
   const llmConfig: LLMConfig = {
     provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
@@ -436,7 +382,6 @@ export async function runReflector<T>(
 
   const model = getModel(llmConfig);
 
-  // Format diary for prompt
   const diaryText = `
 Status: ${diary.status}
 Accomplishments: ${diary.accomplishments.join('\n- ')}
@@ -450,26 +395,28 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
     ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
     : "";
 
+  // Truncate large inputs to prevent context overflow
+  const safeExistingBullets = truncateForPrompt(existingBullets, 20000);
+  const safeCassHistory = truncateForPrompt(cassHistory, 20000);
+
   const prompt = fillPrompt(PROMPTS.reflector, {
-    existingBullets,
+    existingBullets: safeExistingBullets,
     diary: diaryText,
-    cassHistory,
+    cassHistory: safeCassHistory,
     iterationNote,
   });
 
-  const { object } = await generateObject({
-    model,
-    schema,
-    prompt,
-    temperature: 0.5,
-  });
-
-  return object;
+  return llmWithRetry(async () => {
+    const { object } = await generateObject({
+      model,
+      schema,
+      prompt,
+      temperature: 0.5,
+    });
+    return object;
+  }, "runReflector");
 }
 
-/**
- * Validation result from runValidator
- */
 export interface ValidatorResult {
   valid: boolean;
   verdict: 'ACCEPT' | 'REJECT' | 'REFINE';
@@ -479,28 +426,17 @@ export interface ValidatorResult {
   suggestedRefinement?: string;
 }
 
-// Schema for LLM output
 const ValidatorOutputSchema = z.object({
   verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE']),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
-  evidence: z.array(z.object({
-    sessionPath: z.string(),
-    snippet: z.string(),
-    supports: z.boolean()
-  })).default([]),
-  suggestedRefinement: z.string().optional()
+  evidence: z.object({
+    supporting: z.array(z.string()).default([]),
+    contradicting: z.array(z.string()).default([])
+  }),
+  suggestedRefinement: z.string().optional().nullable()
 });
 
-/**
- * Run the validator to assess if a proposed rule is supported by historical evidence.
- * Used by validate.ts to scientifically validate playbook deltas.
- *
- * @param proposedRule - The rule content being validated
- * @param formattedEvidence - Historical evidence from cass formatted as string
- * @param config - Configuration with LLM settings
- * @returns Validation result with verdict and reasoning
- */
 export async function runValidator(
   proposedRule: string,
   formattedEvidence: string,
@@ -513,39 +449,37 @@ export async function runValidator(
 
   const model = getModel(llmConfig);
 
+  const safeEvidence = truncateForPrompt(formattedEvidence, 30000);
+
   const prompt = fillPrompt(PROMPTS.validator, {
     proposedRule,
-    evidence: formattedEvidence
+    evidence: safeEvidence
   });
 
-  const { object } = await generateObject({
-    model,
-    schema: ValidatorOutputSchema,
-    prompt,
-    temperature: 0.2,
-  });
+  return llmWithRetry(async () => {
+    const { object } = await generateObject({
+      model,
+      schema: ValidatorOutputSchema,
+      prompt,
+      temperature: 0.2,
+    });
 
-  return {
-    valid: object.verdict === 'ACCEPT',
-    verdict: object.verdict,
-    confidence: object.confidence,
-    reason: object.reason,
-    evidence: object.evidence,
-    suggestedRefinement: object.suggestedRefinement
-  };
+    const mappedEvidence = [
+      ...object.evidence.supporting.map(s => ({ sessionPath: "unknown", snippet: s, supports: true })),
+      ...object.evidence.contradicting.map(s => ({ sessionPath: "unknown", snippet: s, supports: false }))
+    ];
+
+    return {
+      valid: object.verdict === 'ACCEPT',
+      verdict: object.verdict,
+      confidence: object.confidence,
+      reason: object.reason,
+      evidence: mappedEvidence,
+      suggestedRefinement: object.suggestedRefinement || undefined
+    };
+  }, "runValidator");
 }
 
-/**
- * Generate context-aware briefing from playbook and history.
- * Used by cm context command for pre-task briefing.
- *
- * @param task - The task description
- * @param bullets - Formatted string of relevant playbook bullets
- * @param history - Related session history from cass
- * @param deprecatedPatterns - Deprecated patterns to warn about
- * @param config - Configuration with LLM settings
- * @returns Formatted briefing text
- */
 export async function generateContext(
   task: string,
   bullets: string,
@@ -554,49 +488,42 @@ export async function generateContext(
   config: Config
 ): Promise<string> {
   const llmConfig: LLMConfig = {
-    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    provider: config.llm?.provider ?? config.provider,
     model: config.llm?.model ?? config.model,
   };
 
   const model = getModel(llmConfig);
 
   const prompt = fillPrompt(PROMPTS.context, {
-    task,
-    bullets,
-    history,
-    deprecatedPatterns
+    task: truncateForPrompt(task, 5000),
+    bullets: truncateForPrompt(bullets, 20000),
+    history: truncateForPrompt(history, 20000),
+    deprecatedPatterns: truncateForPrompt(deprecatedPatterns, 5000)
   });
 
-  const { object } = await generateObject({
-    model,
-    schema: z.object({ briefing: z.string() }),
-    prompt,
-    temperature: 0.3,
-  });
-
-  return object.briefing;
+  return llmWithRetry(async () => {
+    const { text } = await generateObject({
+      model,
+      schema: z.object({ briefing: z.string() }), // Using structured object to force format
+      prompt,
+      temperature: 0.3,
+    });
+    return text.briefing;
+  }, "generateContext");
 }
 
-/**
- * Generate diverse search queries for a task.
- * Used to find relevant prior sessions in cass.
- *
- * @param task - The task description
- * @param config - Configuration with LLM settings
- * @returns Array of search query strings
- */
 export async function generateSearchQueries(
   task: string,
   config: Config
 ): Promise<string[]> {
   const llmConfig: LLMConfig = {
-    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    provider: config.llm?.provider ?? config.provider,
     model: config.llm?.model ?? config.model,
   };
 
   const model = getModel(llmConfig);
 
-  const prompt = `Given this task: ${task}
+  const prompt = `Given this task: ${truncateForPrompt(task, 5000)}
 
 Generate 3-5 diverse search queries to find relevant information:
 - Similar problems encountered before
@@ -606,12 +533,13 @@ Generate 3-5 diverse search queries to find relevant information:
 
 Make queries specific enough to be useful but broad enough to match variations.`;
 
-  const { object } = await generateObject({
-    model,
-    schema: z.object({ queries: z.array(z.string()).max(5) }),
-    prompt,
-    temperature: 0.5,
-  });
-
-  return object.queries;
+  return llmWithRetry(async () => {
+    const { object } = await generateObject({
+      model,
+      schema: z.object({ queries: z.array(z.string()).max(5) }),
+      prompt,
+      temperature: 0.5,
+    });
+    return object.queries;
+  }, "generateSearchQueries");
 }

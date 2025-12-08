@@ -22,9 +22,37 @@ export type SessionStatus = z.infer<typeof SessionStatusEnum>;
 export const BulletScopeEnum = z.enum(["global", "workspace", "language", "framework", "task"]);
 export type BulletScope = z.infer<typeof BulletScopeEnum>;
 
+/**
+ * Binary classification: prescriptive (rule) vs proscriptive (anti-pattern)
+ * - rule: DO this - positive guidance shown in main playbook
+ * - anti-pattern: DON'T do this - warnings shown in PITFALLS section
+ */
 export const BulletTypeEnum = z.enum(["rule", "anti-pattern"]);
 export type BulletType = z.infer<typeof BulletTypeEnum>;
 
+/**
+ * Semantic categorization of bullets by their nature and portability:
+ *
+ * @property project_convention - Repository-specific rules (LOW portability)
+ *   Example: "Use AuthService from @/lib/auth for authentication"
+ *   Applies: Only in matching workspace
+ *   Characteristics: References specific files/modules/patterns in THIS project
+ *
+ * @property stack_pattern - Language/framework best practices (HIGH portability)
+ *   Example: "For TypeScript, prefer interfaces over types for objects"
+ *   Applies: Any project using that stack
+ *   Characteristics: Generic best practices for the tech stack
+ *
+ * @property workflow_rule - Process and methodology rules (MEDIUM portability)
+ *   Example: "Run pnpm test before committing"
+ *   Applies: Based on team/org practices
+ *   Characteristics: About HOW to work, not WHAT to code
+ *
+ * @property anti_pattern - Pitfalls and mistakes to avoid (VARIABLE portability)
+ *   Example: "Don't mock Router hooks directly - use mockRouter utility"
+ *   Display: Shown in separate PITFALLS section, not main playbook
+ *   Characteristics: Negative guidance, often learned from past mistakes
+ */
 export const BulletKindEnum = z.enum([
   "project_convention",
   "stack_pattern",
@@ -68,11 +96,16 @@ export const PlaybookBulletSchema = z
     scope: BulletScopeEnum.default("global"),
     scopeKey: z.string().optional(),
     workspace: z.string().optional(),
+    /** High-level grouping for organization (e.g., 'testing', 'git', 'auth') */
     category: z.string(),
-    content: z.string(),
-  searchPointer: z.string().optional(),
-  type: BulletTypeEnum.default("rule"),
-  isNegative: z.boolean().default(false),
+    /** The actual rule text shown to agents (10-500 characters) */
+    content: z.string().min(10, "Rule content must be at least 10 characters").max(500, "Rule content must not exceed 500 characters"),
+    /** Gemini-style search pattern for retrieving detailed examples from cass */
+    searchPointer: z.string().optional(),
+    /** Binary: prescriptive (rule) or proscriptive (anti-pattern) */
+    type: BulletTypeEnum.default("rule"),
+    /** Computed shorthand for type === 'anti-pattern'. Set automatically during validation. */
+    isNegative: z.boolean().default(false),
   kind: BulletKindEnum.default("stack_pattern"),
   state: BulletStateEnum.default("draft"),
   maturity: BulletMaturityEnum.default("candidate"),
@@ -100,6 +133,7 @@ export const PlaybookBulletSchema = z
     deprecatedAt: z.string().optional()
   })
   .superRefine((bullet, ctx) => {
+    // Scope validation: workspace scope requires workspace to be set
     if (bullet.scope === "workspace" && !bullet.workspace) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -107,6 +141,7 @@ export const PlaybookBulletSchema = z
         message: "workspace scope requires workspace to be set",
       });
     }
+    // Scope validation: language/framework/task scopes require scopeKey
     if (
       (bullet.scope === "language" ||
         bullet.scope === "framework" ||
@@ -119,6 +154,7 @@ export const PlaybookBulletSchema = z
         message: `${bullet.scope} scope requires scopeKey`,
       });
     }
+    // Scope validation: global/workspace scopes should not have scopeKey
     if (
       (bullet.scope === "global" || bullet.scope === "workspace") &&
       bullet.scopeKey
@@ -127,6 +163,23 @@ export const PlaybookBulletSchema = z
         code: z.ZodIssueCode.custom,
         path: ["scopeKey"],
         message: "scopeKey should be omitted for global/workspace scopes",
+      });
+    }
+    // Type/isNegative consistency: isNegative should match type === 'anti-pattern'
+    const expectedNegative = bullet.type === "anti-pattern";
+    if (bullet.isNegative !== expectedNegative) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["isNegative"],
+        message: `isNegative (${bullet.isNegative}) must match type '${bullet.type}' (expected ${expectedNegative})`,
+      });
+    }
+    // Kind/type consistency: anti_pattern kind should have anti-pattern type
+    if (bullet.kind === "anti_pattern" && bullet.type !== "anti-pattern") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["type"],
+        message: "kind 'anti_pattern' requires type 'anti-pattern'",
       });
     }
   });
