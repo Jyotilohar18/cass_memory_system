@@ -447,18 +447,23 @@ As you work, track rule usage:
 
 ```typescript
 interface PlaybookBullet {
-  id: string;                    // "rule-abc123"
+  id: string;                    // "b-abc123xyz"
   content: string;               // The actual rule text
   category: string;              // "testing", "git", "auth", etc.
+  kind: "rule" | "anti_pattern"; // Positive guidance vs pitfall to avoid
 
-  // Confidence tracking
-  helpfulCount: number;
+  // Confidence tracking (with decay)
+  feedbackEvents: FeedbackEvent[];  // Full history with timestamps
+  helpfulCount: number;             // Computed from feedbackEvents
   harmfulCount: number;
-  effectiveScore: number;        // Decay-adjusted score
 
   // Lifecycle
-  maturity: "candidate" | "established" | "proven";
-  isBlocked: boolean;            // If true, shown as anti-pattern
+  maturity: "candidate" | "established" | "proven" | "deprecated";
+  state: "draft" | "active" | "retired";
+
+  // Pinning (protection from auto-deprecation)
+  pinned: boolean;
+  pinnedReason?: string;
 
   // Provenance
   sourceSessions: string[];      // Which sessions contributed
@@ -466,7 +471,46 @@ interface PlaybookBullet {
   createdAt: string;
   lastValidatedAt: string;
 }
+
+interface FeedbackEvent {
+  type: "helpful" | "harmful";
+  timestamp: string;             // ISO-8601 for decay calculation
+  sessionId?: string;
+  reason?: string;
+}
 ```
+
+#### Maturity State Machine
+
+Rules progress through maturity states based on validation:
+
+```
+                    ┌────────────────────────────────────────┐
+                    │                                        │
+  ┌──────────┐      │    ┌─────────────┐    ┌────────┐      │
+  │ candidate│──────┼───▶│ established │───▶│ proven │      │
+  └──────────┘      │    └─────────────┘    └────────┘      │
+       │            │          │                  │          │
+       │            │          │ (harmful ratio   │          │
+       │            │          │  exceeds 25%)    │          │
+       │            │          ▼                  │          │
+       │            │    ┌─────────────┐          │          │
+       └────────────┼───▶│ deprecated  │◀─────────┘          │
+                    │    └─────────────┘                     │
+                    │          │                             │
+                    │          │ (if pinned,                 │
+                    │          │  stays active)              │
+                    │          ▼                             │
+                    │    ┌─────────────┐                     │
+                    │    │   (pinned)  │ bypasses retirement │
+                    │    └─────────────┘                     │
+                    └────────────────────────────────────────┘
+```
+
+**Transitions:**
+- **candidate → established**: 3+ helpful events, low harm ratio
+- **established → proven**: 5+ helpful events, very low harm ratio
+- **any → deprecated**: Harmful ratio exceeds 25% threshold (unless pinned)
 
 ### Effective Score Calculation
 
@@ -728,19 +772,24 @@ Applies validated changes to the playbook:
 ## 🛣️ Roadmap
 
 ### V1 (Current)
-- [x] Zero-config quick start
+- [x] Zero-config quick start (works without `init`)
 - [x] Context command with relevance scoring
-- [x] Feedback tracking (helpful/harmful)
-- [x] Basic playbook management
-- [x] MCP server mode
+- [x] Feedback tracking with timestamps (`feedbackEvents[]`)
+- [x] Confidence decay algorithm (90-day half-life)
+- [x] Anti-pattern inversion (harmful → "AVOID: ...")
+- [x] Maturity state machine (candidate → established → proven)
+- [x] Basic playbook management (list, add, remove, pin)
+- [x] Graceful degradation (works without cass, LLM, or playbook)
+- [x] Secret sanitization with pattern health checks
+- [x] Multi-provider LLM fallback (anthropic → openai → google)
 - [x] Cost controls
 
 ### V2 (Planned)
-- [ ] Confidence decay algorithm
-- [ ] Anti-pattern inversion
+- [ ] MCP server mode for agent integration
 - [ ] Semantic search (local embeddings)
 - [ ] Cross-agent learning (opt-in)
 - [ ] Starter playbooks for common stacks
+- [ ] LLM cost tracking and budget controls
 
 ### V3 (Future)
 - [ ] Team playbooks
@@ -749,10 +798,6 @@ Applies validated changes to the playbook:
 - [ ] Webhook notifications
 
 ---
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Development Setup
 
