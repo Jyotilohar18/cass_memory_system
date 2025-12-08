@@ -293,8 +293,10 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
   
   const globalBlocked = await loadBlockedLog("~/.cass-memory/blocked.log");
+  const globalToxic = await loadBlockedLog("~/.cass-memory/toxic_bullets.log");
   const repoBlocked = await loadBlockedLog(path.resolve(process.cwd(), ".cass", "blocked.log"));
-  const allBlocked = [...globalBlocked, ...repoBlocked];
+  const repoToxic = await loadBlockedLog(path.resolve(process.cwd(), ".cass", "toxic.log"));
+  const allBlocked = [...globalBlocked, ...globalToxic, ...repoBlocked, ...repoToxic];
 
   if (allBlocked.length > 0) {
     const cleanBullets: PlaybookBullet[] = [];

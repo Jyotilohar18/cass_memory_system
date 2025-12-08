@@ -7,6 +7,7 @@ import { getSanitizeConfig } from "./config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "./playbook.js";
 import { calculateMaturityState } from "./scoring.js";
 import { withLock } from "./lock.js";
+import { ensureDir } from "./utils.js";
 
 // --- Types ---
 
@@ -28,6 +29,16 @@ export interface OutcomeInput {
 export interface OutcomeRecord extends OutcomeInput {
   recordedAt: string;
   path: string;
+}
+
+export interface ContextLogEntry {
+  task: string;
+  ruleIds: string[];
+  antiPatternIds: string[];
+  workspace?: string;
+  session?: string;
+  timestamp: string;
+  source?: string;
 }
 
 // --- Constants & Scoring Logic ---
@@ -123,6 +134,15 @@ export async function resolveOutcomeLogPath(): Promise<string> {
   return expandPath("~/.cass-memory/outcomes.jsonl");
 }
 
+async function resolveContextLogPath(): Promise<string> {
+  const repoPath = expandPath(".cass/context-log.jsonl");
+  const repoDirExists = await fileExists(expandPath(".cass"));
+  if (repoDirExists) {
+    return repoPath;
+  }
+  return expandPath("~/.cass-memory/context-log.jsonl");
+}
+
 export async function recordOutcome(
   input: OutcomeInput,
   config: Config
@@ -186,6 +206,35 @@ export async function loadOutcomes(
 
 // --- Feedback Application (Safe) ---
 
+async function loadContextLog(limit = 200): Promise<ContextLogEntry[]> {
+  const logPath = await resolveContextLogPath();
+  if (!(await fileExists(logPath))) return [];
+  const content = await fs.readFile(logPath, "utf-8");
+  const lines = content.split("\n").filter(Boolean);
+  return lines
+    .slice(-limit)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as ContextLogEntry;
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is ContextLogEntry => Boolean(x));
+}
+
+function enrichOutcomeWithContext(outcome: OutcomeRecord, contextLog: ContextLogEntry[]): OutcomeRecord {
+  if (outcome.rulesUsed && outcome.rulesUsed.length > 0) return outcome;
+  if (!outcome.sessionId) return outcome;
+
+  const match = contextLog
+    .filter((e) => e.session === outcome.sessionId && Array.isArray(e.ruleIds) && e.ruleIds.length > 0)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+  if (!match) return outcome;
+  return { ...outcome, rulesUsed: match.ruleIds };
+}
+
 async function resolveTargetPath(bulletId: string, globalPath: string, repoPath: string): Promise<string | null> {
   // Prefer repo
   if (await fileExists(repoPath)) {
@@ -224,14 +273,16 @@ export async function applyOutcomeFeedback(
 
   // Pre-calculate updates: Map<PlaybookPath, Array<{ bulletId, feedback }>>
   const updates = new Map<string, Array<{ bulletId: string; feedback: FeedbackEvent }>>();
+  const contextLog = await loadContextLog();
 
   for (const outcome of list) {
-    if (!outcome.rulesUsed || outcome.rulesUsed.length === 0) continue;
+    const enriched = enrichOutcomeWithContext(outcome, contextLog);
+    if (!enriched.rulesUsed || enriched.rulesUsed.length === 0) continue;
     
-    const scored = scoreImplicitFeedback(outcome);
+    const scored = scoreImplicitFeedback(enriched);
     if (!scored) continue;
 
-    for (const ruleId of outcome.rulesUsed) {
+    for (const ruleId of enriched.rulesUsed) {
       const targetPath = await resolveTargetPath(ruleId, globalPath, repoPath);
       
       if (!targetPath) {
@@ -248,7 +299,7 @@ export async function applyOutcomeFeedback(
         feedback: {
           type: scored.type,
           timestamp: now(),
-          sessionPath: outcome.sessionId,
+          sessionPath: enriched.sessionId,
           context: scored.context,
           decayedValue: scored.decayedValue,
           // Map harmful reason if applicable

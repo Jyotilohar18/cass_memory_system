@@ -1,4 +1,4 @@
-import { log, warn, jaccardSimilarity } from "./utils.js";
+import { log, warn, jaccardSimilarity, hashContent } from "./utils.js";
 
 export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   // AWS

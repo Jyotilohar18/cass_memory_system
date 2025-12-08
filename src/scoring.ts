@@ -56,7 +56,7 @@ export function getDecayedCounts(
 
   for (const event of allHelpful) {
     const base = calculateDecayedValue(event, now, halfLifeDays);
-    const val = base; // Simplified for V1
+    const val = base; 
     if (Number.isFinite(val)) decayedHelpful += val;
   }
   for (const event of allHarmful) {
@@ -89,7 +89,7 @@ export function getEffectiveScore(
   };
 
   const multiplier = maturityMultiplier[bullet.maturity] ?? 1.0;
-  if (rawScore < 0) return rawScore;
+  // No floor at 0 for raw score? A very harmful rule should be negative.
   return rawScore * multiplier;
 }
 
@@ -106,20 +106,28 @@ export function calculateMaturityState(
   const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
   
   const total = decayedHelpful + decayedHarmful;
-  const harmfulRatio = total > 0 ? decayedHarmful / total : 0;
+  // Use epsilon for float comparisons
+  const epsilon = 0.01;
+  const safeTotal = total > epsilon ? total : 0;
+  
+  const harmfulRatio = safeTotal > 0 ? decayedHarmful / safeTotal : 0;
 
-  console.log(`DEBUG: bullet=${bullet.id} total=${total} ratio=${harmfulRatio} helpful=${decayedHelpful} harmful=${decayedHarmful} minTotal=${config.scoring.minFeedbackForActive}`);
-
-  // Transitions configuration
   const { minFeedbackForActive, minHelpfulForProven, maxHarmfulRatioForProven } = config.scoring;
 
-  // Use epsilon to handle floating point decay on very recent events
-  const epsilon = 0.01;
-
-  if (harmfulRatio > 0.3 && total > 0) return "deprecated"; 
-  if (total < minFeedbackForActive - epsilon) return "candidate";                        
-  if (decayedHelpful >= minHelpfulForProven - epsilon && harmfulRatio < maxHarmfulRatioForProven) return "proven";
+  // If we have enough signal and it's bad -> deprecated
+  // We use minFeedbackForActive (default 3) as threshold for automatic deprecation too?
+  // Yes, to give it a chance to recover if just 1 bad event? 
+  // But 1 bad event might be enough if ratio > 0.3.
+  // Let's stick to minFeedbackForActive - epsilon to be consistent.
+  if (harmfulRatio > 0.3 && safeTotal >= (minFeedbackForActive - epsilon)) return "deprecated"; 
   
+  // If not enough signal yet -> candidate
+  if (safeTotal < (minFeedbackForActive - epsilon)) return "candidate";                        
+  
+  // If strong positive signal -> proven
+  if (decayedHelpful >= (minHelpfulForProven - epsilon) && harmfulRatio < maxHarmfulRatioForProven) return "proven";
+  
+  // Otherwise -> established
   return "established";
 }
 
@@ -132,6 +140,8 @@ export function checkForPromotion(
 
   const newState = calculateMaturityState(bullet, config);
   
+  // Allow promotion sequence: candidate -> established -> proven
+  // Also allow candidate -> proven directly if signal is strong enough
   const isPromotion =
     (current === "candidate" && (newState === "established" || newState === "proven")) ||
     (current === "established" && newState === "proven");

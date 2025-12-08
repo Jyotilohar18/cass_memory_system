@@ -384,13 +384,30 @@ export class ProcessedLog {
 
     try {
       const content = await fs.readFile(this.logPath, "utf-8");
-      // Resilience: Skip empty lines, comments, and malformed lines without crashing
       const lines = content.split("\n").filter(line => line.trim() && !line.startsWith("#"));
       
       for (const line of lines) {
+        // Try JSONL first (new format)
+        if (line.trim().startsWith("{")) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.sessionPath) {
+              this.entries.set(entry.sessionPath, {
+                sessionPath: entry.sessionPath,
+                processedAt: entry.processedAt || new Date().toISOString(),
+                diaryId: entry.diaryId || entry.id, // Handle both keys for robustcompat
+                deltasGenerated: typeof entry.deltasGenerated === 'number' ? entry.deltasGenerated : 0
+              });
+            }
+            continue;
+          } catch {
+            // Fall through to TSV if JSON parse fails (hybrid file?)
+          }
+        }
+
+        // TSV fallback (legacy format)
         try {
           const parts = line.split("\t");
-          // Basic validation: must have at least sessionPath (index 1)
           if (parts.length < 2) continue;
 
           const [id, sessionPath, processedAt, deltasProposed] = parts;
@@ -403,27 +420,23 @@ export class ProcessedLog {
             });
           }
         } catch {
-          // Ignore individual malformed lines to prevent total failure
           continue;
         }
       }
     } catch (error) {
       console.error(`Failed to load processed log: ${error}`);
-      // Don't rethrow - treat as empty log to fail open (safe in this context, means re-processing)
     }
   }
 
   async save(): Promise<void> {
     await ensureDir(path.dirname(this.logPath));
     
-    const header = "# id\tsessionPath\tprocessedAt\tdeltasProposed\tdeltasApplied";
-    const lines = [header];
+    const lines = ["# JSONL format: {\"sessionPath\":..., \"processedAt\":...}"];
     
     for (const entry of this.entries.values()) {
-      lines.push(`${entry.diaryId || "-"}\t${entry.sessionPath}\t${entry.processedAt}\t${entry.deltasGenerated}\t0`);
+      lines.push(JSON.stringify(entry));
     }
     
-    // Use atomic write pattern manually here since tracking logic is self-contained
     const tempPath = `${this.logPath}.tmp`;
     try {
         await fs.writeFile(tempPath, lines.join("\n"), "utf-8");

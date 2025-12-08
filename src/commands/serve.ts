@@ -157,6 +157,56 @@ const RESOURCE_DEFS = [
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB guard to avoid runaway payloads
 
+function countBy<T>(items: T[], keyFn: (item: T) => string): Record<string, number> {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    const key = keyFn(item) || "unknown";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function computePlaybookStats(playbook: any, config: any) {
+  const bullets: PlaybookBullet[] = playbook?.bullets || [];
+  const active = getActiveBullets(playbook);
+
+  const distribution = analyzeScoreDistribution(active, config);
+  const total = bullets.length;
+  const byScope = countBy(bullets, (b) => b.scope ?? "unknown");
+  const byState = countBy(bullets, (b) => b.state ?? "unknown");
+  const byKind = countBy(bullets, (b) => b.kind ?? "unknown");
+
+  const scores = bullets.map((b) => ({
+    bullet: b,
+    score: getEffectiveScore(b, config),
+  }));
+
+  const topPerformers = scores
+    .filter((s) => Number.isFinite(s.score))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 5)
+    .map(({ bullet, score }) => ({
+      id: bullet.id,
+      content: bullet.content,
+      score,
+      helpfulCount: bullet.helpfulCount || 0,
+    }));
+
+  const atRiskCount = scores.filter((s) => (s.score ?? 0) < 0).length;
+  const staleCount = bullets.filter((b) => isStale(b, 90)).length;
+
+  return {
+    total,
+    byScope,
+    byState,
+    byKind,
+    scoreDistribution: distribution,
+    topPerformers,
+    atRiskCount,
+    staleCount,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case "cm_context": {
@@ -400,80 +450,7 @@ async function handleResourceRead(uri: string): Promise<any> {
     case "cm://stats":
     case "memory://stats": {
       const playbook = await loadMergedPlaybook(config);
-      const bullets = playbook.bullets;
-      const activeBullets = getActiveBullets(playbook);
-
-      // Score distribution
-      const distribution = analyzeScoreDistribution(activeBullets, config);
-
-      // Count by scope, state, kind
-      const countBy = <T>(items: T[], keyFn: (item: T) => string): Record<string, number> =>
-        items.reduce<Record<string, number>>((acc, item) => {
-          const key = keyFn(item);
-          acc[key] = (acc[key] || 0) + 1;
-          return acc;
-        }, {});
-
-      const byScope = countBy(bullets, (b: PlaybookBullet) => b.scope ?? "unknown");
-      const byState = countBy(bullets, (b: PlaybookBullet) => b.state ?? "unknown");
-      const byKind = countBy(bullets, (b: PlaybookBullet) => b.kind ?? "unknown");
-
-      // Compute scores and rankings
-      const scores = bullets.map((b) => ({
-        bullet: b,
-        score: getEffectiveScore(b, config)
-      }));
-
-      const topPerformers = scores
-        .filter((s) => !isNaN(s.score))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5)
-        .map(({ bullet, score }) => ({
-          id: bullet.id,
-          content: bullet.content.slice(0, 100),
-          score: Number(score.toFixed(2)),
-          helpfulCount: bullet.helpfulCount || 0
-        }));
-
-      const atRisk = scores.filter((s) => s.score < 0).map((s) => ({
-        id: s.bullet.id,
-        content: s.bullet.content.slice(0, 100),
-        score: Number(s.score.toFixed(2))
-      }));
-
-      const staleBullets = bullets.filter((b) => isStale(b, 90));
-
-      // Find merge candidates (high Jaccard similarity)
-      const mergeCandidates: Array<{ a: string; b: string; similarity: number }> = [];
-      for (let i = 0; i < Math.min(bullets.length, 50); i++) {
-        for (let j = i + 1; j < Math.min(bullets.length, 50); j++) {
-          const sim = jaccardSimilarity(bullets[i].content, bullets[j].content);
-          if (sim >= 0.8) {
-            mergeCandidates.push({
-              a: bullets[i].id,
-              b: bullets[j].id,
-              similarity: Number(sim.toFixed(2))
-            });
-          }
-          if (mergeCandidates.length >= 5) break;
-        }
-        if (mergeCandidates.length >= 5) break;
-      }
-
-      const stats = {
-        total: bullets.length,
-        active: activeBullets.length,
-        byScope,
-        byState,
-        byKind,
-        scoreDistribution: distribution,
-        topPerformers,
-        atRisk,
-        atRiskCount: atRisk.length,
-        staleCount: staleBullets.length,
-        mergeCandidates
-      };
-
+      const stats = computePlaybookStats(playbook, config);
       return { uri, mimeType: "application/json", data: stats };
     }
     default:

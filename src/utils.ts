@@ -225,7 +225,7 @@ function validateSessionPath(value: string): string {
   }
 
   // Expand ~ to home directory
-  const expanded = expandPath(cleaned);
+  const expanded = (typeof expandPath === "function") ? expandPath(cleaned) : cleaned;
 
   // Resolve to absolute path
   const absolute = path.resolve(expanded);
@@ -820,7 +820,14 @@ export function shouldRetry(category: ErrorCategory): boolean {
 
 // --- Path Utilities ---
 
-export { expandPath } from "./path-utils.js";
+export function expandPath(p: string): string {
+  if (!p) return "";
+  if (p.startsWith("~")) {
+    const home = process.env.HOME || os.homedir();
+    return path.join(home, p.slice(1));
+  }
+  return p;
+}
 
 /**
  * Normalize a path for the current platform.

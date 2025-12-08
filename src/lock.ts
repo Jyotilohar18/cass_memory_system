@@ -94,9 +94,20 @@ export async function withLock<T>(
         await fs.writeFile(`${lockPath}/pid`, pid);
       } catch {}
 
+      // Start heartbeat to keep lock fresh during long operations
+      const heartbeat = setInterval(async () => {
+        try {
+          const now = new Date();
+          await fs.utimes(lockPath, now, now);
+        } catch {
+          // Best effort
+        }
+      }, 10000); // 10 seconds < 30s threshold
+
       try {
         return await operation();
       } finally {
+        clearInterval(heartbeat);
         // Remove from tracking before releasing
         activeLocks.delete(lockPath);
         try {
