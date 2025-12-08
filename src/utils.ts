@@ -62,7 +62,7 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
   const tempPath = `${expanded}.tmp.${crypto.randomBytes(4).toString("hex")}`;
   
   try {
-    await fs.writeFile(tempPath, content, "utf-8");
+    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
     await fs.rename(tempPath, expanded);
   } catch (err: any) {
     try { await fs.unlink(tempPath); } catch {} 
@@ -134,6 +134,16 @@ export function daysAgo(days: number): Date {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return date;
+}
+
+/**
+ * Return the whole number of days elapsed since the given ISO date or timestamp.
+ * Negative if the date lies in the future.
+ */
+export function daysSince(dateLike: string | number | Date): number {
+  const target = new Date(dateLike);
+  const diffMs = Date.now() - target.getTime();
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
 }
 
 export function formatRelativeTime(isoDate: string): string {
