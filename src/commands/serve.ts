@@ -1,9 +1,11 @@
 import http from "node:http";
 import { generateContextResult } from "./context.js";
 import { recordFeedback } from "./mark.js";
-import { recordOutcome } from "../outcome.js";
+import { recordOutcome, loadOutcomes } from "../outcome.js";
 import { loadConfig } from "../config.js";
 import { log, warn, error as logError } from "../utils.js";
+import { loadMergedPlaybook } from "../playbook.js";
+import { loadAllDiaries } from "../diary.js";
 
 type JsonRpcRequest = {
   jsonrpc?: string;
@@ -62,6 +64,21 @@ const TOOL_DEFS = [
       },
       required: ["sessionId", "outcome"]
     }
+  }
+];
+
+const RESOURCE_DEFS = [
+  {
+    uri: "cm://playbook",
+    description: "Merged playbook (global + repo)"
+  },
+  {
+    uri: "cm://diary",
+    description: "Recent diary entries"
+  },
+  {
+    uri: "cm://outcomes",
+    description: "Recent recorded outcomes"
   }
 ];
 
@@ -126,6 +143,26 @@ function buildError(id: string | number | null, message: string, code = -32000, 
   return { jsonrpc: "2.0", id, error: { code, message, data } };
 }
 
+async function handleResourceRead(uri: string): Promise<any> {
+  const config = await loadConfig();
+  switch (uri) {
+    case "cm://playbook": {
+      const playbook = await loadMergedPlaybook(config);
+      return { uri, mimeType: "application/json", data: playbook };
+    }
+    case "cm://diary": {
+      const diaries = await loadAllDiaries(config.diaryDir);
+      return { uri, mimeType: "application/json", data: diaries.slice(0, 50) };
+    }
+    case "cm://outcomes": {
+      const outcomes = await loadOutcomes(config, 50);
+      return { uri, mimeType: "application/json", data: outcomes };
+    }
+    default:
+      throw new Error(`Unknown resource: ${uri}`);
+  }
+}
+
 async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
   if (body.method === "tools/list") {
     return { jsonrpc: "2.0", id: body.id ?? null, result: { tools: TOOL_DEFS } };
@@ -143,6 +180,21 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
       return { jsonrpc: "2.0", id: body.id ?? null, result };
     } catch (err: any) {
       return buildError(body.id ?? null, err?.message || "Tool call failed");
+    }
+  }
+
+  if (body.method === "resources/list") {
+    return { jsonrpc: "2.0", id: body.id ?? null, result: { resources: RESOURCE_DEFS } };
+  }
+
+  if (body.method === "resources/read") {
+    const uri = body.params?.uri;
+    if (!uri) return buildError(body.id ?? null, "Missing resource uri", -32602);
+    try {
+      const result = await handleResourceRead(uri);
+      return { jsonrpc: "2.0", id: body.id ?? null, result };
+    } catch (err: any) {
+      return buildError(body.id ?? null, err?.message || "Resource read failed");
     }
   }
 
