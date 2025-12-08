@@ -1,18 +1,18 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import { 
-  recordOutcome, 
-  applyOutcomeFeedback, 
+import {
+  recordOutcome,
+  applyOutcomeFeedback,
   scoreImplicitFeedback,
   loadOutcomes,
   OutcomeInput,
   OutcomeStatus,
-  Sentiment 
+  Sentiment
 } from "../outcome.js";
 import { error as logError } from "../utils.js";
 
 // Re-export for backward compat if needed
-export { detectSentiment, scoreImplicitFeedback } from "../outcome.js";
+export { scoreImplicitFeedback } from "../outcome.js";
 
 // --- Helpers duplicate in outcome.ts now, removing local definitions ---
 

@@ -841,6 +841,10 @@ export function normalizePlatformPath(p: string): string {
   if (!p) return "";
 
   let input = expandPath(p);
+  // Debug logging
+  if (p.includes(":") || p.includes("server")) {
+      // console.log(`[DEBUG] normalizePlatformPath input: ${p}, expanded: ${input}`);
+  }
 
   const isUNC = input.startsWith("\\\\") || input.startsWith("//");
   const hasDriveLetter = /^[a-zA-Z]:/.test(input);
@@ -1933,6 +1937,9 @@ export function camelToSnakeKeys<T>(obj: T): T {
 
   return obj;
 }
+
+// Alias for backwards compatibility
+export const denormalizeYamlKeys = camelToSnakeKeys;
 
 /**
  * Convert a single camelCase string to snake_case.
