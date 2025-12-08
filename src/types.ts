@@ -148,7 +148,39 @@ export const PlaybookBulletBaseSchema = z.object({
   tags: z.array(z.string()).default([]),
   embedding: z.array(z.number()).optional(),
   effectiveScore: z.number().optional(),
-  deprecatedAt: z.string().optional()
+  deprecatedAt: z.string().optional(),
+  /**
+   * Detailed provenance trail from diary/sessions.
+   * Tracks which diaries contributed and key evidence quotes.
+   */
+  derivedFrom: z.object({
+    /** IDs of diary entries that contributed to this rule */
+    diaryIds: z.array(z.string()).default([]),
+    /** Key evidence quotes from sessions supporting this rule */
+    keyEvidence: z.array(z.string()).default([])
+  }).optional(),
+  /**
+   * Automated verification specification for programmatic rule validation.
+   *
+   * Types:
+   * - regex: Check if code pattern exists/absent in codebase
+   * - file_exists: Check if specific file/module exists
+   * - cass_query: Check if cass search returns results
+   *
+   * Mode:
+   * - exists: Verification passes if pattern IS found
+   * - absent: Verification passes if pattern is NOT found
+   *
+   * @example
+   * { type: 'regex', pattern: 'TokenValidator', mode: 'exists' }
+   * { type: 'file_exists', pattern: 'lib/auth.ts', mode: 'exists' }
+   * { type: 'cass_query', pattern: 'vitest configuration', mode: 'exists' }
+   */
+  verification: z.object({
+    type: z.enum(["regex", "file_exists", "cass_query"]),
+    pattern: z.string(),
+    mode: z.enum(["exists", "absent"])
+  }).optional()
 });
 
 /**
@@ -349,11 +381,11 @@ export const SanitizationConfigSchema = z.object({
 export type SanitizationConfig = z.infer<typeof SanitizationConfigSchema>;
 
 export const ScoringConfigSectionSchema = z.object({
-  decayHalfLifeDays: z.number().default(90),
-  harmfulMultiplier: z.number().default(4),
-  minFeedbackForActive: z.number().default(3),
-  minHelpfulForProven: z.number().default(10),
-  maxHarmfulRatioForProven: z.number().default(0.1)
+  decayHalfLifeDays: z.number().min(1).max(365).default(90),
+  harmfulMultiplier: z.number().min(1).max(10).default(4),
+  minFeedbackForActive: z.number().min(0).max(100).default(3),
+  minHelpfulForProven: z.number().min(0).max(1000).default(10),
+  maxHarmfulRatioForProven: z.number().min(0).max(1).default(0.1)
 });
 export type ScoringConfigSection = z.infer<typeof ScoringConfigSectionSchema>;
 
@@ -364,7 +396,7 @@ export const ConfigSchema = z
     schema_version: z.number().default(1).describe("Config file version"),
     llm: z
       .object({
-        provider: z.string().default("anthropic"),
+        provider: LLMProviderEnum.default("anthropic"),
         model: z.string().default("claude-sonnet-4-20250514"),
       })
       .optional(),
@@ -379,7 +411,7 @@ export const ConfigSchema = z
     autoReflect: z.boolean().default(false),
     dedupSimilarityThreshold: z.number().min(0).max(1).default(0.85),
     pruneHarmfulThreshold: z.number().min(1).max(10).default(3),
-    defaultDecayHalfLife: z.number().min(1).default(90),
+    defaultDecayHalfLife: z.number().min(1).max(365).default(90),
     maxBulletsInContext: z.number().min(5).max(200).default(50),
     maxHistoryInContext: z.number().min(3).max(50).default(10),
     sessionLookbackDays: z.number().min(1).max(365).default(7),
@@ -600,6 +632,85 @@ export const ReflectionStatsSchema = z.object({
 });
 export type ReflectionStats = z.infer<typeof ReflectionStatsSchema>;
 
+// ============================================================================
+// COMMAND RESULT & ERROR TYPES
+// ============================================================================
+
+/**
+ * Violation severity levels for audit command.
+ * - low: Stylistic deviation
+ * - medium: Best practice not followed
+ * - high: Security/correctness issue
+ */
+export const AuditSeverityEnum = z.enum(["low", "medium", "high"]);
+export type AuditSeverity = z.infer<typeof AuditSeverityEnum>;
+
+/**
+ * Individual violation found by audit command.
+ * Represents a rule that was violated or contradicted in a session.
+ */
+export const AuditViolationSchema = z.object({
+  /** ID of bullet that was violated or contradicted */
+  bulletId: z.string(),
+  /** Text of the rule that was violated */
+  bulletContent: z.string(),
+  /** Path to session where violation occurred */
+  sessionPath: z.string(),
+  /** Excerpt showing the violation */
+  evidence: z.string(),
+  /** How serious the violation is */
+  severity: AuditSeverityEnum
+});
+export type AuditViolation = z.infer<typeof AuditViolationSchema>;
+
+/**
+ * Standard return type for all CLI commands.
+ * Provides consistent success/failure responses with optional data payloads.
+ */
+export const CommandResultSchema = z.object({
+  /** True if command completed successfully */
+  success: z.boolean(),
+  /** Human-readable summary of result */
+  message: z.string(),
+  /** Optional command-specific payload (varies by command) */
+  data: z.unknown().optional(),
+  /** Optional error details for failures (stack trace in verbose mode) */
+  error: z.string().optional()
+});
+export type CommandResult = z.infer<typeof CommandResultSchema>;
+
+/**
+ * Doctor/health check result for individual check items.
+ */
+export const HealthCheckItemSchema = z.object({
+  /** Name of the check */
+  name: z.string(),
+  /** Whether the check passed */
+  passed: z.boolean(),
+  /** Human-readable status message */
+  message: z.string(),
+  /** Optional details or recommendations */
+  details: z.string().optional()
+});
+export type HealthCheckItem = z.infer<typeof HealthCheckItemSchema>;
+
+/**
+ * Full health check result from doctor command.
+ */
+export const HealthCheckResultSchema = z.object({
+  /** Overall health status */
+  healthy: z.boolean(),
+  /** Individual check results */
+  checks: z.array(HealthCheckItemSchema),
+  /** Summary of passed/failed checks */
+  summary: z.object({
+    passed: z.number(),
+    failed: z.number(),
+    total: z.number()
+  })
+});
+export type HealthCheckResult = z.infer<typeof HealthCheckResultSchema>;
+
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,
   PlaybookBulletBase: PlaybookBulletBaseSchema,
@@ -613,5 +724,9 @@ export const Schemas = {
   ValidationResult: ValidationResultSchema,
   SearchPlan: SearchPlanSchema,
   PlaybookStats: PlaybookStatsSchema,
-  ReflectionStats: ReflectionStatsSchema
+  ReflectionStats: ReflectionStatsSchema,
+  CommandResult: CommandResultSchema,
+  AuditViolation: AuditViolationSchema,
+  HealthCheckItem: HealthCheckItemSchema,
+  HealthCheckResult: HealthCheckResultSchema
 } as const;

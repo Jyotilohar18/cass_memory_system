@@ -51,29 +51,8 @@ export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; fr
 // --- File Locking ---
 
 export async function withLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const lockFile = `${expandPath(filePath)}.lock`;
-  const maxRetries = 10;
-  const retryDelay = 100; // ms
-
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      // "wx" flag fails if file exists
-      await fs.writeFile(lockFile, process.pid.toString(), { flag: "wx" });
-      
-      try {
-        return await operation();
-      } finally {
-        await fs.unlink(lockFile);
-      }
-    } catch (err: any) {
-      if (err.code === "EEXIST") {
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error(`Could not acquire lock for ${filePath} after ${maxRetries} attempts.`);
+  const { withLock: lock } = await import("./lock.js");
+  return lock(filePath, operation);
 }
 
 export async function atomicWrite(filePath: string, content: string): Promise<void> {
@@ -712,4 +691,3 @@ function formatDateShort(isoDate: string): string {
     return "unknown date";
   }
 }
-
