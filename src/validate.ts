@@ -96,7 +96,7 @@ export async function evidenceCountGate(
   if (successCount >= 5 && failureCount === 0) {
     return {
       passed: true,
-      reason: `Strong success signal (${successCount} successes). Auto-accepting.`,
+      reason: `Strong success signal (${successCount} successes). Auto-accepting.`, 
       suggestedState: "active",
       sessionCount, successCount, failureCount
     };
@@ -105,7 +105,7 @@ export async function evidenceCountGate(
   if (failureCount >= 3 && successCount === 0) {
     return {
       passed: false,
-      reason: `Strong failure signal (${failureCount} failures). Auto-rejecting.`,
+      reason: `Strong failure signal (${failureCount} failures). Auto-rejecting.`, 
       suggestedState: "draft",
       sessionCount, successCount, failureCount
     };
@@ -173,20 +173,12 @@ export async function validateDelta(
   const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath);
   const formattedEvidence = formatEvidence(evidenceHits);
 
-  const result = await runValidator(content, formattedEvidence, config);
+  const rawResult = await runValidator(content, formattedEvidence, config);
+  const result = normalizeValidatorVerdict(rawResult);
 
-  let finalVerdict = result.verdict as "ACCEPT" | "REJECT" | "ACCEPT_WITH_CAUTION";
+  let finalVerdict = result.verdict as "ACCEPT" | "REJECT" | "ACCEPT_WITH_CAUTION" | "REFINE";
 
-  // Fix: Ensure string[] to object array mapping is correct
-  // runValidator currently returns object array for evidence but ValidatorResult type might not align perfectly
-  // Wait, ValidatorResult interface in llm.ts: evidence: Array<{ sessionPath: string; snippet: string; supports: boolean }>
-  // ValidationResult schema in types.ts: evidence: z.array(z.string())
-  // There's a type mismatch I introduced in previous fix.
-  // Let's stick to the schema in types.ts which says evidence is string array.
-  // But llm.ts runValidator returns object array.
-  // I need to map it.
-
-  // Map object array to string array for 'evidence' field
+  // Map object array to string array for 'evidence' field (legacy/schema compatibility)
   const evidenceStrings = result.evidence.map(e => e.snippet);
 
   // Map object array to ValidationEvidence[] for supporting/contradicting
@@ -207,9 +199,10 @@ export async function validateDelta(
   return {
     valid: result.valid,
     result: {
-      ...result,
-      verdict: finalVerdict,
-      evidence: evidenceStrings,
+      ...result, // Spread raw props
+      verdict: finalVerdict, // Override verdict if normalized
+      evidence: evidenceStrings, // Override evidence with string[]
+      refinedRule: result.suggestedRefinement, // Map suggestedRefinement -> refinedRule
       approved: result.valid,
       supportingEvidence: supporting,
       contradictingEvidence: contradicting
