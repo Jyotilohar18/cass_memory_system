@@ -81,7 +81,7 @@ export async function initCommand(options: { force?: boolean; json?: boolean; re
 
 /**
  * Initialize repo-level .cass/ directory structure.
- * Creates project-specific playbook and toxic.log for team sharing.
+ * Creates project-specific playbook and blocked.log for team sharing.
  */
 async function initRepoCommand(options: { force?: boolean; json?: boolean }) {
   const cassDir = await resolveRepoDir();
@@ -145,7 +145,7 @@ async function initRepoCommand(options: { force?: boolean; json?: boolean }) {
     console.log("");
     console.log("The .cass/ directory contains:");
     console.log(chalk.cyan("  • playbook.yaml  - Project-specific rules (commit to git)"));
-    console.log(chalk.cyan("  • toxic.log      - Blocked patterns for this project"));
+    console.log(chalk.cyan("  • blocked.log    - Blocked patterns for this project"));
     console.log("");
     console.log("These files are merged with your global ~/.cass-memory/ settings.");
     console.log("Project rules take precedence over global rules.");

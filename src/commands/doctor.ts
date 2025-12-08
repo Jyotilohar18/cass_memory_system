@@ -439,17 +439,17 @@ function createResetConfigFix(configPath: string): FixableIssue {
 }
 
 /**
- * Create fix for missing repo toxic.log file.
+ * Create fix for missing repo blocked.log file.
  */
-function createMissingToxicLogFix(toxicPath: string): FixableIssue {
+function createMissingBlockedLogFix(blockedPath: string): FixableIssue {
   return {
-    id: "missing-toxic-log",
-    description: `Create empty toxic.log: ${toxicPath}`,
+    id: "missing-blocked-log",
+    description: `Create empty blocked.log: ${blockedPath}`,
     category: "storage",
     severity: "warn",
     safety: "safe",
     fix: async () => {
-      await fs.writeFile(toxicPath, "");
+      await fs.writeFile(blockedPath, "");
     },
   };
 }
@@ -496,11 +496,11 @@ export async function detectFixableIssues(): Promise<FixableIssue[]> {
         issues.push(createMissingPlaybookFix(repoPlaybookPath));
       }
 
-      // Check for toxic.log
-      const toxicPath = path.join(cassDir, "toxic.log");
-      const toxicExists = await fileExists(toxicPath);
-      if (!toxicExists) {
-        issues.push(createMissingToxicLogFix(toxicPath));
+      // Check for blocked.log
+      const blockedPath = path.join(cassDir, "blocked.log");
+      const blockedExists = await fileExists(blockedPath);
+      if (!blockedExists) {
+        issues.push(createMissingBlockedLogFix(blockedPath));
       }
     }
   }
@@ -694,10 +694,10 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
   const cassDir = await resolveRepoDir();
   if (cassDir) {
     const repoPlaybookExists = await fileExists(path.join(cassDir, "playbook.yaml"));
-    const repoToxicExists = await fileExists(path.join(cassDir, "toxic.log"));
+    const repoBlockedExists = await fileExists(path.join(cassDir, "blocked.log"));
 
-    const hasStructure = repoPlaybookExists || repoToxicExists;
-    const isComplete = repoPlaybookExists && repoToxicExists;
+    const hasStructure = repoPlaybookExists || repoBlockedExists;
+    const isComplete = repoPlaybookExists && repoBlockedExists;
 
     let status: CheckStatus = "pass";
     let message = "";
@@ -709,10 +709,10 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
       status = "warn";
       const missing: string[] = [];
       if (!repoPlaybookExists) missing.push("playbook.yaml");
-      if (!repoToxicExists) missing.push("toxic.log");
+      if (!repoBlockedExists) missing.push("blocked.log");
       message = `Partial setup. Missing: ${missing.join(", ")}. Run \`cm init --repo --force\` to complete.`;
     } else {
-      message = "Complete (.cass/playbook.yaml and .cass/toxic.log present)";
+      message = "Complete (.cass/playbook.yaml and .cass/blocked.log present)";
     }
 
     checks.push({
@@ -722,7 +722,7 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
       details: {
         cassDir,
         playbookExists: repoPlaybookExists,
-        toxicLogExists: repoToxicExists,
+        blockedLogExists: repoBlockedExists,
       },
     });
   } else {

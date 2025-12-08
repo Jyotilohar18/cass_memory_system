@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, deprecateBullet, savePlaybook, findBullet, addBullet } from "../playbook.js";
-import { loadToxicLog, appendToxicLog } from "../playbook.js";
+import { loadBlockedLog, appendBlockedLog } from "../playbook.js";
 import { now, error as logError } from "../utils.js";
 import { InversionReport } from "../types.js";
 import chalk from "chalk";
@@ -34,13 +34,13 @@ export async function forgetCommand(
     process.exit(1);
   }
 
-  // 1. Add to toxic log
-  await appendToxicLog({
+  // 1. Add to blocked log
+  await appendBlockedLog({
     id: bullet.id,
     content: bullet.content,
     reason: flags.reason,
     forgottenAt: now()
-  }, "~/.cass-memory/toxic_bullets.log");
+  }, "~/.cass-memory/blocked.log");
 
   // 2. Invert if requested
   let antiPatternId: string | undefined;
