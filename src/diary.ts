@@ -234,7 +234,10 @@ export async function generateDiary(sessionPath: string, config: Config): Promis
     preferences: extracted.preferences || [],
     keyLearnings: extracted.keyLearnings || [],
     tags: extracted.tags || [],
-    searchAnchors: extracted.searchAnchors || [],
+    searchAnchors:
+      (extracted.searchAnchors && extracted.searchAnchors.length > 0)
+        ? extracted.searchAnchors
+        : extractSearchAnchors(extracted),
     relatedSessions: related
   };
   
@@ -278,6 +281,114 @@ async function saveDiaryEntry(entry: DiaryEntry, config: Config): Promise<void> 
     try { await fs.unlink(tempPath); } catch {}
     throw error;
   }
+}
+
+// --- Safe Extraction Wrapper ---
+
+/**
+ * Session metadata for diary extraction.
+ */
+export interface SessionMetadata {
+  sessionPath: string;
+  agent: string;
+  workspace?: string;
+}
+
+/**
+ * Safe wrapper around diary extraction with graceful fallback on failure.
+ * Philosophy: A minimal diary is better than no diary. Failed extractions are
+ * marked clearly but don't break the pipeline.
+ *
+ * @param sessionContent - Raw session content (sanitized)
+ * @param metadata - Session metadata (path, agent, workspace)
+ * @param config - Configuration including LLM settings
+ * @returns DiaryEntry - either full extraction or minimal fallback
+ *
+ * @example
+ * const diary = await extractDiarySafe(content, { sessionPath, agent, workspace }, config);
+ * // Always returns valid DiaryEntry, even on LLM failure
+ */
+export async function extractDiarySafe(
+  sessionContent: string,
+  metadata: SessionMetadata,
+  config: Config
+): Promise<DiaryEntry> {
+  const now = new Date().toISOString();
+  const baseEntry: Partial<DiaryEntry> = {
+    id: `diary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    sessionPath: metadata.sessionPath,
+    timestamp: now,
+    agent: metadata.agent,
+    workspace: metadata.workspace || path.basename(path.dirname(metadata.sessionPath)),
+  };
+
+  try {
+    // Attempt full extraction
+    const extracted = await extractDiary(
+      ExtractionSchema,
+      sessionContent,
+      metadata,
+      config
+    );
+
+    // Generate search anchors from extracted content if not provided
+    const searchAnchors =
+      (extracted.searchAnchors && extracted.searchAnchors.length > 0)
+        ? extracted.searchAnchors
+        : extractSearchAnchors(extracted);
+
+    // Enrich with related sessions
+    const relatedSessions = await enrichWithRelatedSessions(sessionContent, config);
+
+    return {
+      ...baseEntry,
+      status: extracted.status || "mixed",
+      accomplishments: extracted.accomplishments || [],
+      decisions: extracted.decisions || [],
+      challenges: extracted.challenges || [],
+      preferences: extracted.preferences || [],
+      keyLearnings: extracted.keyLearnings || [],
+      tags: extracted.tags || [],
+      searchAnchors,
+      relatedSessions,
+    } as DiaryEntry;
+  } catch (error) {
+    // Return minimal fallback diary
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    return {
+      ...baseEntry,
+      status: "mixed",
+      accomplishments: ["[Extraction failed - see raw session]"],
+      decisions: [],
+      challenges: [`Diary extraction error: ${errorMessage}`],
+      preferences: [],
+      keyLearnings: [],
+      tags: ["extraction-failure"],
+      searchAnchors: ["extraction-failure", metadata.agent],
+      relatedSessions: [],
+    } as DiaryEntry;
+  }
+}
+
+/**
+ * Extract diary fields with per-field fallbacks.
+ * Individual field failures don't crash the whole extraction.
+ *
+ * @param sessionContent - Raw session content
+ * @param metadata - Session metadata
+ * @param config - Configuration
+ * @returns Partial diary fields with defaults for failed extractions
+ */
+export async function extractDiaryFields(
+  sessionContent: string,
+  metadata: SessionMetadata,
+  config: Config
+): Promise<z.infer<typeof ExtractionSchema>> {
+  // This delegates to the LLM extraction but could be extended
+  // to have per-field fallbacks in the future
+  const result = await extractDiary(ExtractionSchema, sessionContent, metadata, config);
+  return result as z.infer<typeof ExtractionSchema>;
 }
 
 // --- Statistics ---

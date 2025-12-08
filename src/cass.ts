@@ -198,7 +198,10 @@ export async function cassExport(
   const args = ["export", sessionPath, "--format", format];
   
   try {
-    const { stdout } = await execFileAsync(cassPath, args, { maxBuffer: 50 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(cassPath, args, {
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 30_000,
+    });
     return stdout;
   } catch (err: any) {
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return null;
@@ -266,21 +269,40 @@ export async function cassTimeline(
   }
 }
 
+type ProcessedLogLike = { processedSessions: Set<string>; lastProcessedAt?: string };
+
+function normalizeProcessed(
+  processedOrLog: Set<string> | ProcessedLogLike
+): { processed: Set<string>; lastProcessedAt?: string } {
+  if (processedOrLog instanceof Set) {
+    return { processed: processedOrLog, lastProcessedAt: undefined };
+  }
+  return {
+    processed: processedOrLog.processedSessions ?? new Set<string>(),
+    lastProcessedAt: processedOrLog.lastProcessedAt
+  };
+}
+
 export async function findUnprocessedSessions(
-  processed: Set<string>,
-  options: { days?: number; maxSessions?: number; agent?: string },
+  processedOrLog: Set<string> | ProcessedLogLike,
+  options: { days?: number; maxSessions?: number; agent?: string; agents?: string[] } = {},
   cassPath = "cass"
 ): Promise<string[]> {
+  const { processed } = normalizeProcessed(processedOrLog);
   const timeline = await cassTimeline(options.days || 7, cassPath);
   
-  // Flatten
-  const allSessions = timeline.groups.flatMap((g: any) => 
-    g.sessions.map((s: any) => ({ path: s.path, agent: s.agent }))
+  const allSessions = timeline.groups.flatMap((g: CassTimelineGroup) => 
+    g.sessions.map((s) => ({ path: s.path, agent: s.agent }))
   );
+
+  let unprocessed = allSessions.filter((s) => !processed.has(s.path));
+
+  const agentsFilter = options.agents ?? (options.agent ? [options.agent] : undefined);
+  if (agentsFilter && agentsFilter.length > 0) {
+    const set = new Set(agentsFilter);
+    unprocessed = unprocessed.filter((s) => set.has(s.agent));
+  }
   
-  return allSessions
-    .filter((s: any) => !processed.has(s.path))
-    .filter((s: any) => !options.agent || s.agent === options.agent)
-    .map((s: any) => s.path)
-    .slice(0, options.maxSessions || 20);
+  const limit = options.maxSessions ?? 20;
+  return unprocessed.map((s) => s.path).slice(0, limit);
 }

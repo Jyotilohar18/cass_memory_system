@@ -5,7 +5,7 @@ import {
   ValidationResult,
   ValidationEvidence
 } from "./types.js";
-import { runValidator } from "./llm.js";
+import { runValidator, type ValidatorResult } from "./llm.js";
 import { safeCassSearch, cassAvailable } from "./cass.js";
 import { extractKeywords, log } from "./utils.js";
 
@@ -101,6 +101,19 @@ Relevance: ${h.score}
 
 // --- Main Validator ---
 
+export function normalizeValidatorVerdict(
+  llmResult: ValidatorResult
+): { valid: boolean; verdict: ValidationResult["verdict"]; confidence: number } {
+  const verdict =
+    llmResult.verdict === "REFINE" ? "ACCEPT_WITH_CAUTION" : llmResult.verdict;
+  const valid = llmResult.verdict !== "REJECT";
+  const confidence =
+    verdict === "ACCEPT_WITH_CAUTION"
+      ? Math.max(0, Math.min(1, llmResult.confidence * 0.8))
+      : llmResult.confidence;
+  return { valid, verdict, confidence };
+}
+
 export async function validateDelta(
   delta: PlaybookDelta,
   config: Config
@@ -156,21 +169,16 @@ export async function validateDelta(
   const supportingEvidence = evidence.filter(e => e.supports);
   const contradictingEvidence = evidence.filter(e => !e.supports);
 
-  // Treat REFINE as a cautionary accept so we don't drop potentially useful deltas.
-  const verdict =
-    llmResult.verdict === "REFINE" ? "ACCEPT_WITH_CAUTION" : llmResult.verdict;
-  const isValid = llmResult.verdict === "REJECT" ? false : true;
-  const adjustedConfidence =
-    verdict === "ACCEPT_WITH_CAUTION" ? Math.max(0, Math.min(1, llmResult.confidence * 0.8)) : llmResult.confidence;
+  const mapped = normalizeValidatorVerdict(llmResult);
 
   const validationResult: ValidationResult = {
-    valid: isValid,
-    verdict,
-    confidence: adjustedConfidence,
+    valid: mapped.valid,
+    verdict: mapped.verdict,
+    confidence: mapped.confidence,
     reason: llmResult.reason,
     evidence,
     refinedRule: llmResult.suggestedRefinement,
-    approved: isValid,
+    approved: mapped.valid,
     supportingEvidence,
     contradictingEvidence
   };

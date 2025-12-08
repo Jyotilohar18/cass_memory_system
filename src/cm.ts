@@ -7,6 +7,7 @@ import { playbookCommand } from "./commands/playbook.js";
 import { statsCommand } from "./commands/stats.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { reflectCommand } from "./commands/reflect.js";
+import { validateCommand } from "./commands/validate.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -75,6 +76,14 @@ program.command("stats")
   .description("Show playbook health metrics")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await statsCommand(opts));
+
+// --- Validate ---
+program.command("validate")
+  .description("Scientifically validate a proposed rule against history")
+  .argument("<rule>", "Proposed rule text")
+  .option("--json", "Output JSON")
+  .option("--verbose", "Verbose output")
+  .action(async (rule: string, opts: any) => await validateCommand(rule, opts));
 
 // --- Doctor ---
 program.command("doctor")

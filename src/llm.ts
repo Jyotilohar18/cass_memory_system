@@ -131,11 +131,12 @@ SESSION METADATA:
 - Agent: {agent}
 - Workspace: {workspace}
 
-SESSION CONTENT:
+<session_content>
 {content}
+</session_content>
 
 INSTRUCTIONS:
-Extract the following from this session. Be SPECIFIC and ACTIONABLE.
+Extract the following from the session content above. Be SPECIFIC and ACTIONABLE.
 Avoid generic statements like "wrote code" or "fixed bug".
 Include specific:
 - File names and paths
@@ -160,14 +161,17 @@ Respond with JSON matching this schema:
 
   reflector: `You are analyzing a coding session diary to extract reusable lessons for a playbook.
 
-EXISTING PLAYBOOK RULES:
+<existing_playbook>
 {existingBullets}
+</existing_playbook>
 
-SESSION DIARY:
+<session_diary>
 {diary}
+</session_diary>
 
-RELEVANT CASS HISTORY:
+<cass_history>
 {cassHistory}
+</cass_history>
 
 {iterationNote}
 
@@ -188,11 +192,13 @@ Maximum 20 deltas per reflection. Focus on quality over quantity.`,
 
   validator: `You are a scientific validator checking if a proposed rule is supported by historical evidence.
 
-PROPOSED RULE:
+<proposed_rule>
 {proposedRule}
+</proposed_rule>
 
-HISTORICAL EVIDENCE (from cass search):
+<historical_evidence>
 {evidence}
+</historical_evidence>
 
 INSTRUCTIONS:
 Analyze whether the evidence supports, contradicts, or is neutral toward the proposed rule.
@@ -217,14 +223,17 @@ Respond with:
 TASK DESCRIPTION:
 {task}
 
-RELEVANT PLAYBOOK RULES:
+<playbook_rules>
 {bullets}
+</playbook_rules>
 
-RELEVANT SESSION HISTORY:
+<session_history>
 {history}
+</session_history>
 
-DEPRECATED PATTERNS TO AVOID:
+<deprecated_patterns>
 {deprecatedPatterns}
+</deprecated_patterns>
 
 INSTRUCTIONS:
 Create a concise briefing that:
@@ -237,11 +246,13 @@ Keep the briefing actionable and under 500 words.`,
 
   audit: `You are auditing a coding session to check if established rules were followed.
 
-SESSION CONTENT:
+<session_content>
 {sessionContent}
+</session_content>
 
-RULES TO CHECK:
+<rules_to_check>
 {rulesToCheck}
+</rules_to_check>
 
 INSTRUCTIONS:
 For each rule, determine if the session:
@@ -268,7 +279,7 @@ export function fillPrompt(
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\{${key}\}`, "g"), value);
+    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
   }
   return result;
 }
@@ -488,7 +499,7 @@ export async function generateContext(
   config: Config
 ): Promise<string> {
   const llmConfig: LLMConfig = {
-    provider: config.llm?.provider ?? config.provider,
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
   };
 
@@ -502,13 +513,13 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const { text } = await generateObject({
+    const { object } = await generateObject({
       model,
       schema: z.object({ briefing: z.string() }), // Using structured object to force format
       prompt,
       temperature: 0.3,
     });
-    return text.briefing;
+    return object.briefing;
   }, "generateContext");
 }
 
@@ -517,7 +528,7 @@ export async function generateSearchQueries(
   config: Config
 ): Promise<string[]> {
   const llmConfig: LLMConfig = {
-    provider: config.llm?.provider ?? config.provider,
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,
   };
 
