@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { safeCassSearch } from "../cass.js";
-import { extractKeywords, scoreBulletRelevance } from "../utils.js";
+import { extractKeywords, scoreBulletRelevance, checkDeprecatedPatterns } from "../utils.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet } from "../types.js";
 import chalk from "chalk";
@@ -59,11 +59,16 @@ export async function contextCommand(
     workspace: flags.workspace
   }, config.cassPath);
 
-  // 3. Warnings
+  // 3. Warnings (deprecated patterns seen in history or task text)
   const warnings: string[] = [];
+  const historyWarnings = checkDeprecatedPatterns(cassHits, playbook.deprecatedPatterns);
+  warnings.push(...historyWarnings);
+
   for (const pattern of playbook.deprecatedPatterns) {
     if (new RegExp(pattern.pattern, "i").test(task)) {
-      warnings.push(`Deprecated pattern detected: "${pattern.pattern}". Reason: ${pattern.reason}. ${pattern.replacement ? `Use ${pattern.replacement} instead.` : ""}`);
+      const reason = pattern.reason ? ` (Reason: ${pattern.reason})` : "";
+      const replacement = pattern.replacement ? ` - use ${pattern.replacement} instead` : "";
+      warnings.push(`Task matches deprecated pattern "${pattern.pattern}"${replacement}${reason}`);
     }
   }
 

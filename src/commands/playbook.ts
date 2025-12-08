@@ -1,7 +1,8 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets } from "../playbook.js";
 import { expandPath, error as logError } from "../utils.js";
-import { NewBulletDataSchema, BulletTypeEnum, BulletScopeEnum, BulletKindEnum } from "../types.js"; // Correct imports
+import { withLock } from "../lock.js";
+import { NewBulletDataSchema, BulletTypeEnum, BulletScopeEnum, BulletKindEnum } from "../types.js";
 import chalk from "chalk";
 
 export async function playbookCommand(
@@ -37,29 +38,31 @@ export async function playbookCommand(
       process.exit(1);
     }
     
-    // Load global playbook for writing
-    const { loadPlaybook } = await import("../playbook.js");
-    const playbook = await loadPlaybook(config.playbookPath);
-    
-    const bullet = addBullet(playbook, {
-      content,
-      category: flags.category || "general",
-      type: "rule",
-      scope: "global",
-      kind: "workflow_rule",
-      tags: [],
-      workspace: undefined,
-      searchPointer: undefined,
-      isNegative: false
-    }, "manual-cli", config.defaultDecayHalfLife);
+    // Lock global playbook for writing
+    await withLock(config.playbookPath, async () => {
+        const { loadPlaybook } = await import("../playbook.js");
+        const playbook = await loadPlaybook(config.playbookPath);
+        
+        const bullet = addBullet(playbook, {
+          content,
+          category: flags.category || "general",
+          type: "rule",
+          scope: "global",
+          kind: "workflow_rule",
+          tags: [],
+          workspace: undefined,
+          searchPointer: undefined,
+          isNegative: false
+        }, "manual-cli"); // removed config.defaultDecayHalfLife arg as it's optional and addBullet signature handles defaults
 
-    await savePlaybook(playbook, config.playbookPath);
+        await savePlaybook(playbook, config.playbookPath);
 
-    if (flags.json) {
-      console.log(JSON.stringify({ success: true, bullet }, null, 2));
-    } else {
-      console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
-    }
+        if (flags.json) {
+          console.log(JSON.stringify({ success: true, bullet }, null, 2));
+        } else {
+          console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
+        }
+    });
     return;
   }
 
@@ -70,36 +73,46 @@ export async function playbookCommand(
       process.exit(1);
     }
 
-    // Find where it lives
+    // Determine target first (read-only check)
     const { loadPlaybook } = await import("../playbook.js");
-    let playbook = await loadPlaybook(config.playbookPath);
     let savePath = config.playbookPath;
-    let bullet = findBullet(playbook, id);
-
-    if (!bullet) {
-      const repoPath = ".cass/playbook.yaml";
-      playbook = await loadPlaybook(repoPath);
-      bullet = findBullet(playbook, id);
-      savePath = repoPath;
+    let checkPlaybook = await loadPlaybook(config.playbookPath);
+    
+    if (!findBullet(checkPlaybook, id)) {
+        const repoPath = ".cass/playbook.yaml";
+        const repoPlaybook = await loadPlaybook(repoPath);
+        if (findBullet(repoPlaybook, id)) {
+            savePath = repoPath;
+        } else {
+            logError(`Bullet ${id} not found`);
+            process.exit(1);
+        }
     }
 
-    if (!bullet) {
-      logError(`Bullet ${id} not found`);
-      process.exit(1);
-    }
+    // Acquire lock on the target file
+    await withLock(savePath, async () => {
+        // Reload inside lock
+        const playbook = await loadPlaybook(savePath);
+        const bullet = findBullet(playbook, id);
 
-    if (flags.hard) {
-      playbook.bullets = playbook.bullets.filter(b => b.id !== id);
-    } else {
-      deprecateBullet(playbook, id, flags.reason || "Removed via CLI");
-    }
+        if (!bullet) {
+             logError(`Bullet ${id} disappeared during lock acquisition`);
+             process.exit(1);
+        }
 
-    await savePlaybook(playbook, savePath);
+        if (flags.hard) {
+          playbook.bullets = playbook.bullets.filter(b => b.id !== id);
+        } else {
+          deprecateBullet(playbook, id, flags.reason || "Removed via CLI");
+        }
 
-    if (flags.json) {
-      console.log(JSON.stringify({ success: true, id, action: flags.hard ? "deleted" : "deprecated" }, null, 2));
-    } else {
-      console.log(chalk.green(`✓ ${flags.hard ? "Deleted" : "Deprecated"} bullet ${id}`));
-    }
+        await savePlaybook(playbook, savePath);
+
+        if (flags.json) {
+          console.log(JSON.stringify({ success: true, id, action: flags.hard ? "deleted" : "deprecated" }, null, 2));
+        } else {
+          console.log(chalk.green(`✓ ${flags.hard ? "Deleted" : "Deprecated"} bullet ${id}`));
+        }
+    });
   }
 }
