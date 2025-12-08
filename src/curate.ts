@@ -252,7 +252,12 @@ export function curatePlaybook(
     
     if (newMaturity !== oldMaturity) {
       bullet.maturity = newMaturity;
-      result.promotions.push({ bulletId: bullet.id, from: oldMaturity, to: newMaturity });
+      result.promotions.push({ 
+        bulletId: bullet.id, 
+        from: oldMaturity, 
+        to: newMaturity,
+        reason: `Promoted from ${oldMaturity} to ${newMaturity}` 
+      });
     }
     
     const demotionCheck = checkForDemotion(bullet, config);
@@ -280,10 +285,10 @@ export function curatePlaybook(
       deprecateBullet(playbook, bullet.id, `Inverted to anti-pattern: ${antiPattern.id}`, antiPattern.id);
       
       inversions.push({
-        originalId: bullet.id,
+        bulletId: bullet.id,
         originalContent: bullet.content,
-        antiPatternId: antiPattern.id,
-        antiPatternContent: antiPattern.content
+        newContent: antiPattern.content,
+        reason: `Inverted to anti-pattern: ${antiPattern.id}`
       });
     }
   }

@@ -12,7 +12,7 @@ import {
   PlaybookDelta,
   PlaybookDeltaSchema,
 } from "./types.js";
-import { getModel, LLMConfig, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
+import { getModel, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
 
 // ============================================================================
@@ -241,12 +241,6 @@ export async function reflectOnSession(
   const diaryContext = formatDiaryForPrompt(diary);
   const cassHistory = await getCassHistoryForDiary(diary, config);
 
-  // Get LLM config
-  const llmConfig: LLMConfig = {
-    provider: config.llm?.provider as "openai" | "anthropic" | "google" ?? config.provider ?? "anthropic",
-    model: config.llm?.model ?? config.model ?? "claude-sonnet-4-20250514",
-  };
-
   // Multi-iteration loop
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Build iteration note
@@ -283,7 +277,7 @@ Don't repeat what's already captured.`;
     });
 
     try {
-      const model = getModel(llmConfig);
+      const model = getModel(config);
 
       const { object } = await generateObject({
         model,

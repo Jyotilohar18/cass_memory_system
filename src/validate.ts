@@ -27,7 +27,9 @@ export async function evidenceCountGate(
   const sessions = new Set<string>();
 
   for (const hit of hits) {
-    sessions.add(hit.source_path);
+    if (hit.source_path) {
+      sessions.add(hit.source_path);
+    }
     // Heuristic classification based on snippet text
     // In a real system, we'd look up the actual session diary outcome,
     // but snippet heuristics are a fast proxy.

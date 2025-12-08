@@ -297,18 +297,19 @@ export type Config = z.infer<typeof ConfigSchema>;
 // ============================================================================
 
 export const CassSearchHitSchema = z.object({
-  sessionPath: z.string(),
+  source_path: z.string(),
+  line_number: z.number(),
   agent: z.string(),
-  timestamp: z.string().optional(),
-  snippet: z.string(),
-  lineNumber: z.number().optional(),
-  relevance: z.number().optional(),
-  source_path: z.string().optional(),
-  line_number: z.number().optional(),
+  workspace: z.string().optional(),
   title: z.string().optional(),
+  snippet: z.string(),
   score: z.number().optional(),
-  created_at: z.string().optional()
-});
+  created_at: z.union([z.string(), z.number()]).optional(),
+}).transform(data => ({
+  ...data,
+  sessionPath: data.source_path,
+  timestamp: data.created_at ? String(data.created_at) : undefined
+}));
 export type CassSearchHit = z.infer<typeof CassSearchHitSchema>;
 
 // Aliases for backwards compatibility
