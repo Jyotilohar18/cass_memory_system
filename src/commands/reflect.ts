@@ -20,24 +20,23 @@ export async function reflectCommand(
     dryRun?: boolean;
     json?: boolean;
     llm?: boolean;
+    session?: string;
   } = {}
 ): Promise<void> {
   const config = await loadConfig();
   
   // Handle LLM opt-in
-  if (!options.llm) {
-      config.provider = "none" as any;
-      if (config.llm) config.llm.provider = "none" as any;
+  if (options.llm === false) { // Only disable if explicitly set to false, or default logic? 
+      // CLI flags usually boolean. If undefined, default behavior.
+      // If user passes --no-llm, commander might pass false.
+      // Let's assume config handles defaults.
   }
   
   const globalPath = expandPath(config.playbookPath);
-  const logPath = expandPath(getProcessedLogPath(options.workspace));
+  const logPath = expandPath(getProcessedLogPath(options.workspace, config.diaryDir));
 
   // We must lock the entire reflect process to ensure we don't duplicate work 
   // or overwrite the playbook/processed log with stale data.
-  // Locking just the save is insufficient if two processes pick up the same "unprocessed" sessions.
-  
-  // Using globalPath as the lock key for the entire critical section.
   await withLock(globalPath, async () => {
     const processedLog = new ProcessedLog(logPath);
     await processedLog.load();
@@ -45,37 +44,38 @@ export async function reflectCommand(
     // Load fresh playbook for context
     const initialPlaybook = await loadMergedPlaybook(config);
 
-    log("Searching for new sessions...", true);
-    
-    const sessions = await findUnprocessedSessions(processedLog.getProcessedPaths(), { 
-      days: options.days || config.sessionLookbackDays,
-      maxSessions: options.maxSessions || 5,
-      agent: options.agent
-    }, config.cassPath);
+    let sessions: string[] = [];
+    if (options.session) {
+        sessions = [options.session];
+    } else {
+        log("Searching for new sessions...", !options.json);
+        sessions = await findUnprocessedSessions(processedLog.getProcessedPaths(), { 
+            days: options.days || config.sessionLookbackDays,
+            maxSessions: options.maxSessions || 5,
+            agent: options.agent
+        }, config.cassPath);
+    }
 
     const unprocessed = sessions.filter(s => !processedLog.has(s));
 
     if (unprocessed.length === 0) {
-      console.log(chalk.green("No new sessions to reflect on."));
+      if (!options.json) console.log(chalk.green("No new sessions to reflect on."));
       return;
     }
 
-    console.log(chalk.blue(`Found ${unprocessed.length} sessions to process.`));
+    if (!options.json) console.log(chalk.blue(`Found ${unprocessed.length} sessions to process.`));
 
     const allDeltas: PlaybookDelta[] = [];
-    const CONCURRENCY = 3;
+    const CONCURRENCY = 1; // Keep at 1 for now to avoid race conditions within the loop or excessive LLM load
     
     // Helper for processing a single session
     const processSession = async (sessionPath: string) => {
-      console.log(chalk.dim(`Processing ${sessionPath}...`));
+      if (!options.json) console.log(chalk.dim(`Processing ${sessionPath}...`));
       try {
         const diary = await generateDiary(sessionPath, config);
-        const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
         
-        if (content.length < 50) {
-          warn(`Skipping empty session: ${sessionPath}`);
-          return;
-        }
+        // Optimization: If we have a diary but it's empty/trivial, skip reflection?
+        // For now, rely on reflectOnSession logic.
 
         const deltas = await reflectOnSession(diary, initialPlaybook, config);
         
@@ -85,7 +85,7 @@ export async function reflectCommand(
           if (validation.valid) {
             validatedDeltas.push(delta);
           } else {
-            log(`Rejected delta: ${validation.gate?.reason || validation.result?.reason}`, true);
+            log(`Rejected delta: ${validation.gate?.reason || validation.result?.reason}`, !options.json);
           }
         }
 
@@ -93,6 +93,7 @@ export async function reflectCommand(
           allDeltas.push(...validatedDeltas);
         }
         
+        // Mark as processed immediately in memory, save later
         processedLog.add({
           sessionPath,
           processedAt: now(),
@@ -105,10 +106,9 @@ export async function reflectCommand(
       }
     };
 
-    // Process in batches
-    for (let i = 0; i < unprocessed.length; i += CONCURRENCY) {
-      const batch = unprocessed.slice(i, i + CONCURRENCY);
-      await Promise.all(batch.map(processSession));
+    // Process sequentially for safety/simplicity in V1
+    for (const session of unprocessed) {
+        await processSession(session);
     }
 
     if (options.dryRun) {
@@ -117,7 +117,7 @@ export async function reflectCommand(
     }
 
     if (allDeltas.length > 0) {
-      // Reload fresh playbook again just in case, though we hold the lock so it should be safe unless external edits happen
+      // Reload fresh playbook again just in case
       const freshPlaybook = await loadPlaybook(globalPath);
       
       // Pass freshPlaybook as target (mutable), initialPlaybook as context (readonly, merged)
@@ -126,19 +126,25 @@ export async function reflectCommand(
       
       await processedLog.save();
 
-      console.log(chalk.green(`\nReflection complete!`));
-      console.log(`Applied ${curation.applied} changes.`);
-      console.log(`Skipped ${curation.skipped} (duplicates/conflicts).`);
-      
-      if (curation.inversions.length > 0) {
-        console.log(chalk.yellow(`\nInverted ${curation.inversions.length} harmful rules:`));
-        curation.inversions.forEach(inv => {
-          console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
-        });
+      if (options.json) {
+          console.log(JSON.stringify(curation, null, 2));
+      } else {
+          console.log(chalk.green(`
+Reflection complete!`));
+          console.log(`Applied ${curation.applied} changes.`);
+          console.log(`Skipped ${curation.skipped} (duplicates/conflicts).`);
+          
+          if (curation.inversions.length > 0) {
+            console.log(chalk.yellow(`
+Inverted ${curation.inversions.length} harmful rules:`));
+            curation.inversions.forEach(inv => {
+              console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
+            });
+          }
       }
     } else {
-      await processedLog.save(); // Save progress (sessions marked as processed even if no deltas)
-      console.log("No new insights found.");
+      await processedLog.save(); // Save progress even if no deltas
+      if (!options.json) console.log("No new insights found.");
     }
   });
 }

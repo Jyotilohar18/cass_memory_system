@@ -5,6 +5,7 @@ import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
 import { now, expandPath, fileExists } from "../utils.js";
 import { FeedbackEvent, PlaybookBullet } from "../types.js";
 import { withLock } from "../lock.js";
+import { applyOutcomeFeedback, loadOutcomes } from "../outcome.js";
 
 type OutcomeStatus = "success" | "failure" | "mixed";
 type Sentiment = "positive" | "negative" | "neutral";
@@ -187,6 +188,8 @@ export async function outcomeCommand(
   const config = await loadConfig();
   const globalPath = expandPath(config.playbookPath);
   const repoPath = expandPath(".cass/playbook.yaml");
+  const missing: string[] = [];
+  const recorded: Array<{ id: string; target: string; score: number; type: "helpful" | "harmful" }> = [];
 
   const ruleIds = flags.rules
     .split(",")
@@ -279,3 +282,36 @@ export async function outcomeCommand(
   }
 }
 
+export async function applyOutcomeLogCommand(flags: { session?: string; limit?: number; json?: boolean }) {
+  const config = await loadConfig();
+  const outcomes = await loadOutcomes(config, flags.limit ?? 50);
+
+  if (flags.session) {
+    const filtered = outcomes.filter((o) => o.sessionId === flags.session);
+    if (filtered.length === 0) {
+      console.error(chalk.yellow(`No outcomes found for session ${flags.session}`));
+      process.exit(0);
+    }
+    const result = await applyOutcomeFeedback(filtered, config);
+    if (flags.json) {
+      console.log(JSON.stringify({ ...result, session: flags.session }, null, 2));
+      return;
+    }
+    console.log(chalk.green(`Applied outcome feedback for session ${flags.session}: ${result.applied} updates`));
+    if (result.missing.length > 0) {
+      console.log(chalk.yellow(`Missing rules: ${result.missing.join(", ")}`));
+    }
+    return;
+  }
+
+  // No session filter: apply latest (limit) outcomes.
+  const result = await applyOutcomeFeedback(outcomes, config);
+  if (flags.json) {
+    console.log(JSON.stringify({ ...result, totalOutcomes: outcomes.length }, null, 2));
+    return;
+  }
+  console.log(chalk.green(`Applied outcome feedback for ${outcomes.length} outcomes: ${result.applied} updates`));
+  if (result.missing.length > 0) {
+    console.log(chalk.yellow(`Missing rules: ${result.missing.join(", ")}`));
+  }
+}
