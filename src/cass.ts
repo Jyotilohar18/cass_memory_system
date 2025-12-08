@@ -32,15 +32,16 @@ export function cassAvailable(cassPath = "cass"): boolean {
 }
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
-  try {
-    execSync(`${cassPath} health`, { stdio: "pipe" });
-    return false;
-  } catch (err: any) {
-    if (err.status === CASS_EXIT_CODES.INDEX_MISSING || err.status === 1) {
-      return true;
-    }
-    return false;
-  }
+   try {
+     const { spawnSync } = require("node:child_process");
+     const result = spawnSync(cassPath, ["health"], { stdio: "pipe" });
+     
+     if (result.status === 0) return false;
+     if (result.status === CASS_EXIT_CODES.INDEX_MISSING || result.status === 1) return true;
+     return false;
+   } catch {
+     return false;
+   }
 }
 
 // --- Indexing ---
