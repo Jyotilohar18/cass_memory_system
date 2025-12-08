@@ -38,66 +38,6 @@ import {
 
 // --- Helpers ---
 
-export function formatRawSession(content: string, ext: string): string {
-  const normalizedExt = (ext.startsWith(".") ? ext : `.${ext}`).toLowerCase();
-
-  if (normalizedExt === ".md" || normalizedExt === ".markdown") {
-    return content;
-  }
-
-  if (normalizedExt === ".jsonl") {
-    if (!content.trim()) return "";
-    return content
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          const json = JSON.parse(line);
-          const role = json.role || "[unknown]";
-          const msgContent = json.content || "[empty]";
-          return `**${role}**: ${msgContent}`;
-        } catch {
-          return `[PARSE ERROR] ${line}`;
-        }
-      })
-      .join("\n\n");
-  }
-
-  if (normalizedExt === ".json") {
-    if (!content.trim()) return "";
-    try {
-      const json = JSON.parse(content);
-      let messages: any[] = [];
-
-      if (Array.isArray(json)) {
-        messages = json;
-      } else if (json.messages && Array.isArray(json.messages)) {
-        messages = json.messages;
-      } else if (json.conversation && Array.isArray(json.conversation)) {
-        messages = json.conversation;
-      } else if (json.turns && Array.isArray(json.turns)) {
-        messages = json.turns;
-      } else {
-        return `WARNING: Unrecognized JSON structure (.${ext})\n${content}`;
-      }
-
-      if (messages.length === 0) return "";
-
-      return messages
-        .map((msg) => {
-          const role = msg.role || "[unknown]";
-          const msgContent = msg.content || "[empty]";
-          return `**${role}**: ${msgContent}`;
-        })
-        .join("\n\n");
-    } catch {
-      return `[PARSE ERROR: Invalid JSON] ${content}`;
-    }
-  }
-
-  return `WARNING: Unsupported session format (.${normalizedExt.replace(".", "")})\n${content}`;
-}
-
 function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
   const normalized = path.normalize(sessionPath);
   
@@ -186,7 +126,7 @@ export async function generateDiary(
   const metadata = extractSessionMetadata(sessionPath);
 
   // 4. LLM Extraction
-  const ExtractionSchema = DiaryEntrySchema.omit({
+  const ExtractionSchema = DiaryEntrySchema.omit({ 
     id: true, 
     sessionPath: true, 
     timestamp: true, 
@@ -240,6 +180,32 @@ export async function saveDiary(diary: DiaryEntry, config: Config): Promise<void
   const diaryPath = path.join(expandPath(config.diaryDir), `${diary.id}.json`);
   await atomicWrite(diaryPath, JSON.stringify(diary, null, 2));
   log(`Saved diary to ${diaryPath}`);
+}
+
+/**
+ * Locate a diary entry by session path.
+ *
+ * Returns the first diary whose sessionPath matches the provided path
+ * (after resolving both to absolute paths). Returns null if none found or
+ * if the diary directory is missing/unreadable.
+ */
+export async function findDiaryBySession(
+  sessionPath: string,
+  diaryDir: string
+): Promise<DiaryEntry | null> {
+  try {
+    const base = path.resolve(expandPath(diaryDir));
+    const target = path.isAbsolute(sessionPath)
+      ? path.resolve(expandPath(sessionPath))
+      : path.resolve(base, sessionPath);
+
+    const diaries = await loadAllDiaries(diaryDir);
+    const match = diaries.find((d) => d.sessionPath && path.resolve(expandPath(d.sessionPath)) === target);
+    return match || null;
+  } catch (err: any) {
+    warn(`Failed to find diary for ${sessionPath}: ${err.message}`);
+    return null;
+  }
 }
 
 export async function loadDiary(idOrPath: string, config: Config): Promise<DiaryEntry | null> {
