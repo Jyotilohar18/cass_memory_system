@@ -402,6 +402,7 @@ export const ConfigSchema = z
       .optional(),
     provider: LLMProviderEnum.default("anthropic"),
     model: z.string().default("claude-sonnet-4-20250514"),
+    apiKey: z.string().optional(),
     cassPath: PathString.default("cass").describe("Path to cass executable"),
     playbookPath: PathString.default("~/.cass-memory/playbook.yaml"),
     diaryDir: PathString.default("~/.cass-memory/diary"),

@@ -258,7 +258,7 @@ async function exportSessionSafe(sessionPath: string, cassPath: string): Promise
   }
 }
 
-async function enrichWithRelatedSessions(content: string, config: Config): Promise<RelatedSession[]> {
+async function enrichWithRelatedSessions(_content: string, _config: Config): Promise<RelatedSession[]> {
   // Placeholder for cross-agent enrichment
   return []; 
 }

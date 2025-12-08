@@ -6,12 +6,10 @@ import {
   PlaybookSchema,
   PlaybookBullet,
   Config,
-  PlaybookBulletSchema,
-  NewBulletData
+  PlaybookBulletSchema
 } from "./types.js";
 import {
   expandPath,
-  ensureDir,
   fileExists,
   generateBulletId,
   now,
