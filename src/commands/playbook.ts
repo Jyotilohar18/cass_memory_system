@@ -1,10 +1,13 @@
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets } from "../playbook.js";
-import { error as logError } from "../utils.js";
+import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
+import { error as logError, fileExists, now } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
-import { PlaybookBullet } from "../types.js";
+import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema } from "../types.js";
+import { readFile } from "node:fs/promises";
 import chalk from "chalk";
+import yaml from "yaml";
+import { z } from "zod";
 
 // Helper function to format a bullet for detailed display
 function formatBulletDetails(bullet: PlaybookBullet, effectiveScore: number, decayedCounts: { decayedHelpful: number; decayedHarmful: number }): string {
@@ -101,12 +104,209 @@ function findSimilarIds(bullets: PlaybookBullet[], targetId: string, maxSuggesti
     .map(s => s.id);
 }
 
+// Strip non-portable fields from bullet for export
+function prepareBulletForExport(bullet: PlaybookBullet): Partial<PlaybookBullet> {
+  // Create a copy without source session paths (not portable)
+  const exported: Partial<PlaybookBullet> = { ...bullet };
+  delete exported.sourceSessions; // Not portable between systems
+  return exported;
+}
+
+// Detect file format from content or extension
+function detectFormat(content: string, filePath?: string): "yaml" | "json" {
+  if (filePath?.endsWith(".json")) return "json";
+  if (filePath?.endsWith(".yaml") || filePath?.endsWith(".yml")) return "yaml";
+
+  // Try to detect from content
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
+  return "yaml";
+}
+
 export async function playbookCommand(
-  action: "list" | "add" | "remove" | "get",
+  action: "list" | "add" | "remove" | "get" | "export" | "import",
   args: string[],
-  flags: { category?: string; json?: boolean; hard?: boolean; reason?: string }
+  flags: { category?: string; json?: boolean; hard?: boolean; reason?: string; all?: boolean; replace?: boolean; yaml?: boolean }
 ) {
   const config = await loadConfig();
+
+  if (action === "export") {
+    const playbook = await loadMergedPlaybook(config);
+
+    // Filter bullets based on --all flag
+    let bulletsToExport = flags.all
+      ? playbook.bullets
+      : playbook.bullets.filter(b => !b.deprecated);
+
+    // Prepare bullets for export (strip non-portable fields)
+    const exportedBullets = bulletsToExport.map(prepareBulletForExport);
+
+    // Create export structure
+    const exportData = {
+      schema_version: playbook.schema_version,
+      name: playbook.name || "exported-playbook",
+      description: playbook.description || "Exported from cass-memory",
+      metadata: {
+        ...playbook.metadata,
+        exportedAt: now(),
+        exportedBulletCount: exportedBullets.length,
+      },
+      deprecatedPatterns: playbook.deprecatedPatterns || [],
+      bullets: exportedBullets,
+    };
+
+    // Output in requested format
+    if (flags.json || (!flags.yaml && flags.json !== false)) {
+      // Default to JSON if --json specified or neither specified
+      if (flags.json) {
+        console.log(JSON.stringify(exportData, null, 2));
+      } else {
+        // Default: YAML (more human-readable)
+        console.log(yaml.stringify(exportData));
+      }
+    } else {
+      // --yaml explicitly specified
+      console.log(yaml.stringify(exportData));
+    }
+    return;
+  }
+
+  if (action === "import") {
+    const filePath = args[0];
+    if (!filePath) {
+      logError("File path required for import");
+      process.exit(1);
+    }
+
+    // Check file exists
+    if (!(await fileExists(filePath))) {
+      if (flags.json) {
+        console.log(JSON.stringify({ success: false, error: `File not found: ${filePath}` }, null, 2));
+      } else {
+        logError(`File not found: ${filePath}`);
+      }
+      process.exit(1);
+    }
+
+    // Read and parse file
+    const content = await readFile(filePath, "utf-8");
+    const format = detectFormat(content, filePath);
+
+    let importedData: any;
+    try {
+      if (format === "json") {
+        importedData = JSON.parse(content);
+      } else {
+        importedData = yaml.parse(content);
+      }
+    } catch (err: any) {
+      if (flags.json) {
+        console.log(JSON.stringify({ success: false, error: `Parse error: ${err.message}` }, null, 2));
+      } else {
+        logError(`Failed to parse ${format.toUpperCase()}: ${err.message}`);
+      }
+      process.exit(1);
+    }
+
+    // Validate imported bullets
+    const importedBullets: PlaybookBullet[] = [];
+    const validationErrors: string[] = [];
+
+    const bulletsArray = importedData.bullets || importedData;
+    if (!Array.isArray(bulletsArray)) {
+      if (flags.json) {
+        console.log(JSON.stringify({ success: false, error: "Invalid format: expected bullets array" }, null, 2));
+      } else {
+        logError("Invalid format: expected bullets array or playbook with bullets field");
+      }
+      process.exit(1);
+    }
+
+    for (let i = 0; i < bulletsArray.length; i++) {
+      try {
+        // Add required fields if missing
+        const bullet = {
+          ...bulletsArray[i],
+          createdAt: bulletsArray[i].createdAt || now(),
+          updatedAt: bulletsArray[i].updatedAt || now(),
+          helpfulCount: bulletsArray[i].helpfulCount ?? 0,
+          harmfulCount: bulletsArray[i].harmfulCount ?? 0,
+          feedbackEvents: bulletsArray[i].feedbackEvents || [],
+          tags: bulletsArray[i].tags || [],
+          sourceSessions: bulletsArray[i].sourceSessions || [],
+          sourceAgents: bulletsArray[i].sourceAgents || [],
+          deprecated: bulletsArray[i].deprecated ?? false,
+          pinned: bulletsArray[i].pinned ?? false,
+        };
+        const validated = PlaybookBulletSchema.parse(bullet);
+        importedBullets.push(validated);
+      } catch (err: any) {
+        validationErrors.push(`Bullet ${i}: ${err.message}`);
+      }
+    }
+
+    if (validationErrors.length > 0 && importedBullets.length === 0) {
+      if (flags.json) {
+        console.log(JSON.stringify({ success: false, errors: validationErrors }, null, 2));
+      } else {
+        logError("All bullets failed validation:");
+        validationErrors.forEach(e => console.error(`  - ${e}`));
+      }
+      process.exit(1);
+    }
+
+    // Merge with existing playbook
+    await withLock(config.playbookPath, async () => {
+      const existingPlaybook = await loadPlaybook(config.playbookPath);
+      const existingIds = new Set(existingPlaybook.bullets.map(b => b.id));
+
+      let added = 0;
+      let skipped = 0;
+      let updated = 0;
+
+      for (const bullet of importedBullets) {
+        if (existingIds.has(bullet.id)) {
+          if (flags.replace) {
+            // Replace existing bullet
+            const idx = existingPlaybook.bullets.findIndex(b => b.id === bullet.id);
+            if (idx >= 0) {
+              existingPlaybook.bullets[idx] = bullet;
+              updated++;
+            }
+          } else {
+            skipped++;
+          }
+        } else {
+          existingPlaybook.bullets.push(bullet);
+          added++;
+        }
+      }
+
+      await savePlaybook(existingPlaybook, config.playbookPath);
+
+      if (flags.json) {
+        console.log(JSON.stringify({
+          success: true,
+          file: filePath,
+          added,
+          skipped,
+          updated,
+          validationWarnings: validationErrors.length > 0 ? validationErrors : undefined,
+        }, null, 2));
+      } else {
+        console.log(chalk.green(`✓ Imported playbook from ${filePath}`));
+        console.log(`  - ${chalk.green(added)} bullets added`);
+        console.log(`  - ${chalk.yellow(skipped)} bullets skipped (already exist)`);
+        if (updated > 0) {
+          console.log(`  - ${chalk.blue(updated)} bullets updated`);
+        }
+        if (validationErrors.length > 0) {
+          console.log(chalk.yellow(`  - ${validationErrors.length} bullets failed validation`));
+        }
+      }
+    });
+    return;
+  }
 
   if (action === "get") {
     const id = args[0];
