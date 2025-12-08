@@ -107,6 +107,8 @@ export function calculateMaturityState(
   const total = decayedHelpful + decayedHarmful;
   const harmfulRatio = total > 0 ? decayedHarmful / total : 0;
 
+  console.log(`DEBUG: bullet=${bullet.id} total=${total} ratio=${harmfulRatio} helpful=${decayedHelpful} harmful=${decayedHarmful} minTotal=${config.scoring.minFeedbackForActive}`);
+
   // Transitions configuration
   const { minFeedbackForActive, minHelpfulForProven, maxHarmfulRatioForProven } = config.scoring;
 
