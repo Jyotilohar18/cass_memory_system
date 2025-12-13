@@ -2,12 +2,65 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import readline from "node:readline";
 import chalk from "chalk";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ContextResult } from "./types.js";
 
 const execAsync = promisify(exec);
+
+export function getCliName(): string {
+  const envOverride = process.env.CASS_MEMORY_CLI_NAME?.trim();
+  if (envOverride) return envOverride;
+
+  const argv1 = process.argv[1] || "";
+  const argv1Base = path.basename(argv1);
+  if (argv1Base === "cm.ts" || argv1Base === "cm.js") return "cm";
+  if (argv1Base === "cass-memory.ts" || argv1Base === "cass-memory.js") return "cass-memory";
+
+  const argv0 = process.argv[0] || "";
+  const argv0Base = path.basename(argv0);
+  const cleaned = argv0Base.replace(/\.exe$/i, "");
+
+  // When running as `bun run src/cm.ts`, argv0 is "bun" and argv1 is the script path.
+  // When running as a compiled binary, argv0 is the binary path ("cm" or "cass-memory").
+  if (cleaned && cleaned !== "bun" && cleaned !== "node") return cleaned;
+
+  return "cm";
+}
+
+export async function confirmDangerousAction(options: {
+  action: string;
+  details?: string[];
+  confirmPhrase?: string;
+  yes?: boolean;
+  json?: boolean;
+}): Promise<boolean> {
+  if (options.yes) return true;
+  if (options.json) return false;
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return false;
+
+  const phrase = options.confirmPhrase ?? "DELETE";
+
+  console.error(chalk.red("\nDANGEROUS OPERATION"));
+  console.error(chalk.red(options.action));
+  for (const line of options.details || []) {
+    console.error(chalk.gray(`  ${line}`));
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
+
+  const answer = await new Promise<string>((resolve) => {
+    rl.question(chalk.yellow(`Type ${phrase} to confirm: `), resolve);
+  });
+  rl.close();
+
+  return answer.trim() === phrase;
+}
 
 // --- Input Validation Types and Errors ---
 
@@ -1241,8 +1294,10 @@ export function generateBulletId(): string {
   return `b-${timestamp36}-${random}`;
 }
 
-export function generateDiaryId(sessionPath: string): string {
-  const input = `${sessionPath}-${Date.now()}-${process.hrtime.bigint()}-${Math.random()}`;
+export function generateDiaryId(sessionPath: string, content?: string): string {
+  const input = content 
+    ? `${sessionPath}-${content}` 
+    : `${sessionPath}-${Date.now()}-${process.hrtime.bigint()}-${Math.random()}`;
   const hash = hashContent(input);
   return `diary-${hash}`;
 }
@@ -1807,16 +1862,16 @@ export function generateSuggestedQueries(
 
 export function log(msg: string, verbose = false): void {
   if (verbose || process.env.CASS_MEMORY_VERBOSE === "true" || process.env.CASS_MEMORY_VERBOSE === "1") {
-    console.error(chalk.blue("[cass-memory]"), msg);
+    console.error(chalk.blue(`[${getCliName()}]`), msg);
   }
 }
 
 export function error(msg: string): void {
-  console.error(chalk.red("[cass-memory] ERROR:"), msg);
+  console.error(chalk.red(`[${getCliName()}] ERROR:`), msg);
 }
 
 export function warn(msg: string): void {
-  console.error(chalk.yellow("[cass-memory] WARNING:"), msg);
+  console.error(chalk.yellow(`[${getCliName()}] WARNING:`), msg);
 }
 
 // --- String Normalization ---
@@ -1858,7 +1913,6 @@ export function normalizeYamlKeys<T>(obj: T): T {
     // Only process plain objects
     const proto = Object.getPrototypeOf(obj);
     if (proto !== null && proto !== Object.prototype) {
-      // Not a plain object, return unchanged
       return obj;
     }
 
@@ -2113,6 +2167,12 @@ function truncateSnippet(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
 
   // Try to break at word boundary
+  const sentenceEnd = text.search(/[.!?]/);
+  if (sentenceEnd > 0 && sentenceEnd < maxLen - 3) {
+    return text.slice(0, sentenceEnd + 1);
+  }
+
+  // Fall back to word boundary truncation
   const truncated = text.slice(0, maxLen);
   const lastSpace = truncated.lastIndexOf(" ");
 
@@ -2211,7 +2271,7 @@ function truncateReasoning(text: string, maxLen: number): string {
 
   // Try to preserve first sentence
   const sentenceEnd = text.search(/[.!?]/);
-  if (sentenceEnd > 0 && sentenceEnd < maxLen - 3) {
+  if (sentenceEnd !== -1 && sentenceEnd < maxLen - 3) {
     return text.slice(0, sentenceEnd + 1);
   }
 
@@ -2253,228 +2313,7 @@ let shutdownInProgress = false;
 const shutdownHandlers: Array<() => void | Promise<void>> = [];
 
 /**
- * Check if shutdown is currently in progress.
- * Useful for operations to abort early during shutdown.
- */
-export function isShutdownInProgress(): boolean {
-  return shutdownInProgress;
-}
-
-/**
- * Register a cleanup handler to be called during graceful shutdown.
- * Handlers are called in registration order.
- *
- * @param handler - Cleanup function (can be async)
- * @returns Function to unregister the handler
- *
- * @example
- * const unregister = onShutdown(() => {
- *   console.log("Cleaning up...");
- * });
- * // Later: unregister();
- */
-export function onShutdown(handler: () => void | Promise<void>): () => void {
-  shutdownHandlers.push(handler);
-  return () => {
-    const index = shutdownHandlers.indexOf(handler);
-    if (index >= 0) shutdownHandlers.splice(index, 1);
-  };
-}
-
-/**
- * Perform graceful shutdown cleanup.
- * This is called by signal handlers but can also be called directly.
- *
- * @param signal - The signal or reason for shutdown
- * @param exitCode - Exit code to use (default: 0)
- */
-export async function performShutdown(
-  signal: string,
-  exitCode: number = 0
-): Promise<void> {
-  if (shutdownInProgress) return;
-  shutdownInProgress = true;
-
-  const logPrefix = "[cass-memory]";
-
-  try {
-    // 0. Signal abort to all running operations
-    // Note: requestAbort is defined later in this file, use direct access
-    try {
-      globalAbortController?.abort(`Shutdown: ${signal}`);
-    } catch {
-      // Abort controller might not be initialized yet
-    }
-
-    // 1. Release all acquired locks
-    const { releaseAllLocks, getActiveLocks } = await import("./lock.js");
-    const lockCount = getActiveLocks().length;
-    if (lockCount > 0) {
-      const released = await releaseAllLocks();
-      if (released > 0) {
-        console.error(`${logPrefix} Released ${released} lock(s) during shutdown`);
-      }
-    }
-
-    // 2. Run custom shutdown handlers
-    for (const handler of shutdownHandlers) {
-      try {
-        await handler();
-      } catch (err) {
-        // Best effort - continue with other handlers
-        console.error(`${logPrefix} Shutdown handler error:`, err);
-      }
-    }
-
-    // 3. Log shutdown event
-    if (signal === "SIGINT") {
-      console.error(`\n${logPrefix} Operation cancelled by user`);
-    } else if (signal === "SIGTERM") {
-      console.error(`${logPrefix} Received termination signal`);
-    } else {
-      console.error(`${logPrefix} Shutting down: ${signal}`);
-    }
-  } catch (err) {
-    console.error(`${logPrefix} Error during shutdown:`, err);
-  }
-
-  // Exit with appropriate code
-  // SIGINT: 128 + 2 = 130 (Unix convention)
-  // SIGTERM: 128 + 15 = 143 (Unix convention)
-  const finalCode =
-    exitCode !== 0
-      ? exitCode
-      : signal === "SIGINT"
-        ? 130
-        : signal === "SIGTERM"
-          ? 143
-          : 0;
-
-  process.exit(finalCode);
-}
-
-/** Track if handlers are already registered */
-let handlersRegistered = false;
-
-/**
- * Register signal handlers for graceful shutdown.
- * Handles SIGINT (Ctrl+C) and SIGTERM (system termination).
- *
- * This function is idempotent - calling it multiple times has no effect.
- *
- * @example
- * // At application startup
- * setupGracefulShutdown();
- *
- * // Now Ctrl+C will:
- * // 1. Release all acquired locks
- * // 2. Run registered cleanup handlers
- * // 3. Log shutdown message
- * // 4. Exit with code 130
- */
-export function setupGracefulShutdown(): void {
-  if (handlersRegistered) return;
-  handlersRegistered = true;
-
-  // Handle Ctrl+C
-  process.on("SIGINT", () => {
-    void performShutdown("SIGINT", 130);
-  });
-
-  // Handle termination signal (e.g., kill, system shutdown)
-  process.on("SIGTERM", () => {
-    void performShutdown("SIGTERM", 143);
-  });
-
-  // Handle uncaught exceptions gracefully
-  process.on("uncaughtException", (err) => {
-    console.error("[cass-memory] Uncaught exception:", err);
-    void performShutdown("uncaughtException", 1);
-  });
-
-  // Handle unhandled promise rejections
-  process.on("unhandledRejection", (reason) => {
-    console.error("[cass-memory] Unhandled rejection:", reason);
-    void performShutdown("unhandledRejection", 1);
-  });
-}
-
-// --- AbortController Integration ---
-
-/**
- * Error thrown when an operation is aborted.
- * Extends Error with additional abort-specific information.
- */
-export class AbortError extends Error {
-  /** Name is always "AbortError" for instanceof checks */
-  readonly name = "AbortError";
-  /** The reason the operation was aborted */
-  readonly reason: string;
-
-  constructor(reason: string = "Operation aborted") {
-    super(reason);
-    this.reason = reason;
-    // Maintain proper stack trace in V8 environments
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, AbortError);
-    }
-  }
-}
-
-/**
- * Global abort controller for application-wide cancellation.
- * Reset this when starting a new operation that should be cancellable.
- */
-let globalAbortController = new AbortController();
-
-/**
- * Get the global AbortSignal for checking cancellation.
- *
- * @returns The current global AbortSignal
- *
- * @example
- * // Pass to fetch or other APIs that accept AbortSignal
- * const response = await fetch(url, { signal: getAbortSignal() });
- */
-export function getAbortSignal(): AbortSignal {
-  return globalAbortController.signal;
-}
-
-/**
- * Check if the current operation should be aborted.
- * Call this periodically in long-running operations.
- *
- * @throws {AbortError} If abort has been requested
- *
- * @example
- * for (const session of sessions) {
- *   checkAbort(); // Throws if Ctrl+C was pressed
- *   await processSession(session);
- * }
- */
-export function checkAbort(): void {
-  if (globalAbortController.signal.aborted) {
-    throw new AbortError("Operation cancelled by user");
-  }
-}
-
-/**
- * Check if abort has been requested without throwing.
- * Use this when you want to handle abort gracefully.
- *
- * @returns true if abort has been requested
- *
- * @example
- * if (isAborted()) {
- *   return partialResult;
- * }
- */
-export function isAborted(): boolean {
-  return globalAbortController.signal.aborted;
-}
-
-/**
- * Request abort of current operations.
+ * Check if an operation is aborted.
  * This signals all operations watching the global abort signal.
  *
  * @param reason - Optional reason for the abort
@@ -2630,8 +2469,8 @@ export interface InlineFeedback {
 /**
  * Regular expression to match inline feedback comments.
  * Matches patterns like:
- * - // [cass: helpful b-8f3a2c] - this rule saved me
- * - // [cass: harmful b-x7k9p1] - wrong for our use case
+ * - // [cass: helpful b-8f3a2c] - reason why it helped
+ * - // [cass: harmful b-x7k9p1] - reason why it was wrong
  * - # [cass: helpful b-abc123] (Python/shell style)
  * - Block comments: slash-star [cass: harmful b-xyz] star-slash
  */
