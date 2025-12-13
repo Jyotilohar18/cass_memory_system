@@ -13,11 +13,15 @@ import {
   truncate,
   formatLastHelpful,
   extractBulletReasoning,
+  getCliName,
   ensureDir,
-  expandPath
+  expandPath,
+  resolveRepoDir,
+  fileExists
 } from "../utils.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit } from "../types.js";
+import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
 import chalk from "chalk";
 
 // ============================================================================ 
@@ -108,8 +112,33 @@ export async function generateContextResult(
     return b.workspace === flags.workspace;
   });
 
+  let queryEmbedding: number[] | null = null;
+  const embeddingModel =
+    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+      ? config.embeddingModel.trim()
+      : undefined;
+  const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+
+  if (semanticEnabled) {
+    try {
+      queryEmbedding = await embedText(task, { model: embeddingModel });
+      await loadOrComputeEmbeddingsForBullets(activeBullets, { model: embeddingModel });
+    } catch (err: any) {
+      queryEmbedding = null;
+      if (!flags.json) {
+        warn(`[context] Semantic search unavailable; using keyword-only scoring. ${err?.message || ""}`.trim());
+      }
+    }
+  }
+
   const scoredBullets: ScoredBullet[] = activeBullets.map(b => {
-    const relevance = scoreBulletRelevance(b.content, b.tags, keywords);
+    const keywordRelevance = scoreBulletRelevance(b.content, b.tags, keywords);
+    const semanticRelevance =
+      queryEmbedding && b.embedding
+        ? Math.max(0, cosineSimilarity(queryEmbedding, b.embedding))
+        : 0;
+
+    const relevance = keywordRelevance + semanticRelevance * 10;
     const effective = getEffectiveScore(b, config);
     const final = relevance * Math.max(0.1, effective);
 
@@ -204,13 +233,11 @@ async function appendContextLog(entry: {
 }) {
   try {
     // Resolve log path: prefer repo-local .cass/ if available
-    const repoLog = path.resolve(".cass", "context-log.jsonl");
-    const repoDirExists = await fs
-      .access(path.dirname(repoLog))
-      .then(() => true)
-      .catch(() => false);
+    const repoDir = await resolveRepoDir();
+    const useRepoLog = repoDir ? await fileExists(repoDir) : false;
+    const repoLog = useRepoLog ? path.join(repoDir!, "context-log.jsonl") : null;
 
-    const logPath = repoDirExists
+    const logPath = repoLog
       ? repoLog
       : expandPath("~/.cass-memory/context-log.jsonl");
 
@@ -329,6 +356,7 @@ export async function contextCommand(
   if (wantsJson) {
     console.log(JSON.stringify(result, null, 2));
   } else {
+    const cli = getCliName();
     // Human Output
     console.log(chalk.bold(`═══════════════════════════════════════════════════════════════`));
     console.log(chalk.bold(`CONTEXT FOR: ${task}`));
@@ -345,7 +373,7 @@ export async function contextCommand(
       });
     } else {
       console.log(chalk.gray("(No relevant playbook rules found)"));
-      console.log(chalk.gray(`  💡 Run 'cm reflect' to start learning from your agent sessions.
+      console.log(chalk.gray(`  💡 Run '${cli} reflect' to start learning from your agent sessions.
 `));
     }
 
