@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { listStarters } from "../starters.js";
+import { getCliName } from "../utils.js";
 
 export interface StartersOptions {
   json?: boolean;
@@ -37,6 +38,6 @@ export async function startersCommand(options: StartersOptions = {}) {
   }
 
   console.log("");
-  console.log(chalk.gray("Seed a playbook with: cm init --starter=<name>"));
+  const cli = getCliName();
+  console.log(chalk.gray(`Seed a playbook with: ${cli} init --starter=<name>`));
 }
-

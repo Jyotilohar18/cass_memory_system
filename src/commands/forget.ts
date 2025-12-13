@@ -1,7 +1,8 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, deprecateBullet, savePlaybook, findBullet, addBullet } from "../playbook.js";
 import { loadBlockedLog, appendBlockedLog } from "../playbook.js";
-import { now, error as logError } from "../utils.js";
+import path from "node:path";
+import { fileExists, now, error as logError, resolveRepoDir } from "../utils.js";
 import { InversionReport } from "../types.js";
 import chalk from "chalk";
 
@@ -23,10 +24,20 @@ export async function forgetCommand(
   let bullet = findBullet(playbook, bulletId);
 
   if (!bullet) {
-    const repoPath = ".cass/playbook.yaml";
-    playbook = await loadPlaybook(repoPath);
-    bullet = findBullet(playbook, bulletId);
-    savePath = repoPath;
+    const repoDir = await resolveRepoDir();
+    const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+
+    if (repoPath && (await fileExists(repoPath))) {
+      try {
+        playbook = await loadPlaybook(repoPath);
+        bullet = findBullet(playbook, bulletId);
+        if (bullet) {
+          savePath = repoPath;
+        }
+      } catch {
+        // Ignore repo playbook load errors and report not found below.
+      }
+    }
   }
 
   if (!bullet) {

@@ -7,7 +7,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate } from "../utils.js";
+import { truncate, getCliName } from "../utils.js";
 import { PlaybookBullet, Config } from "../types.js";
 import chalk from "chalk";
 
@@ -81,10 +81,11 @@ function calculateStaleness(bullet: PlaybookBullet): {
 function getRecommendation(
   daysSinceLastFeedback: number,
   score: number,
-  maturity: string
+  maturity: string,
+  cli: string
 ): string {
   if (score < -2) {
-    return "Consider using 'cm forget' - negative score suggests this rule is harmful";
+    return `Consider using '${cli} forget' - negative score suggests this rule is harmful`;
   }
   if (daysSinceLastFeedback > 180 && maturity === "candidate") {
     return "Very stale candidate - consider deprecating if no longer relevant";
@@ -102,6 +103,7 @@ export async function staleCommand(
   flags: StaleFlags = {}
 ): Promise<void> {
   const threshold = flags.days ?? 90;
+  const cli = getCliName();
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
 
@@ -132,7 +134,7 @@ export async function staleCommand(
           action: staleness.lastAction,
           timestamp: staleness.lastTimestamp
         },
-        recommendation: getRecommendation(staleness.days, score, bullet.maturity || "candidate")
+        recommendation: getRecommendation(staleness.days, score, bullet.maturity || "candidate", cli)
       });
     }
   }
@@ -155,14 +157,15 @@ export async function staleCommand(
   }
 
   // Human-readable output
-  printStaleBullets(staleBullets, threshold, bullets.length, flags);
+  printStaleBullets(staleBullets, threshold, bullets.length, flags, cli);
 }
 
 function printStaleBullets(
   bullets: StaleBullet[],
   threshold: number,
   totalActive: number,
-  flags: StaleFlags
+  flags: StaleFlags,
+  cli: string
 ): void {
   if (bullets.length === 0) {
     console.log(chalk.green(`\nNo stale bullets found (threshold: ${threshold} days)`));
@@ -205,7 +208,7 @@ function printStaleBullets(
   const candidates = bullets.filter(b => b.maturity === "candidate" && b.daysSinceLastFeedback > 90);
 
   if (negative.length > 0) {
-    console.log(chalk.red(`  • ${negative.length} bullets with negative scores - consider 'cm forget'`));
+    console.log(chalk.red(`  • ${negative.length} bullets with negative scores - consider '${cli} forget'`));
   }
   if (veryStale.length > 0) {
     console.log(chalk.yellow(`  • ${veryStale.length} bullets >180 days stale - review for deprecation`));

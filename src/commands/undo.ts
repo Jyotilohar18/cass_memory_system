@@ -9,7 +9,7 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath } from "../utils.js";
+import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists } from "../utils.js";
 import chalk from "chalk";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 export interface UndoFlags {
   feedback?: boolean;
   hard?: boolean;
+  yes?: boolean;
   json?: boolean;
   reason?: string;
 }
@@ -25,6 +26,8 @@ interface UndoResult {
   success: boolean;
   bulletId: string;
   action: "un-deprecate" | "undo-feedback" | "hard-delete";
+  path?: string;
+  preview?: string;
   before: {
     deprecated?: boolean;
     deprecatedAt?: string;
@@ -113,19 +116,19 @@ async function findBulletLocation(
   bulletId: string,
   config: Config
 ): Promise<{ playbook: ReturnType<typeof loadPlaybook> extends Promise<infer T> ? T : never; path: string; location: "global" | "repo" } | null> {
-  // Check repo-level first
-  const repoPath = path.resolve(process.cwd(), ".cass", "playbook.yaml");
-  try {
-    const stat = await fs.stat(repoPath);
-    if (stat.isFile()) {
+  // Check repo-level first (git root). Only use it when `.cass/playbook.yaml` exists.
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  if (repoPath && await fileExists(repoPath)) {
+    try {
       const repoPlaybook = await loadPlaybook(repoPath);
       const bullet = findBullet(repoPlaybook, bulletId);
       if (bullet) {
         return { playbook: repoPlaybook, path: repoPath, location: "repo" };
       }
+    } catch {
+      // Ignore repo load errors; fall back to global
     }
-  } catch {
-    // Repo playbook doesn't exist
   }
 
   // Check global
@@ -144,6 +147,8 @@ export async function undoCommand(
   flags: UndoFlags = {}
 ): Promise<void> {
   const config = await loadConfig();
+  const cli = getCliName();
+  const repoDir = await resolveRepoDir();
 
   // Find which playbook contains this bullet
   const location = await findBulletLocation(bulletId, config);
@@ -154,7 +159,7 @@ export async function undoCommand(
       console.log(JSON.stringify(error, null, 2));
     } else {
       console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
-      console.log(chalk.gray("Use 'cm playbook list' to see available bullets."));
+      console.log(chalk.gray(`Use '${cli} playbook list' to see available bullets.`));
     }
     process.exit(1);
   }
@@ -165,6 +170,34 @@ export async function undoCommand(
   let result: UndoResult;
 
   if (flags.hard) {
+    const preview = truncate(bullet.content.trim().replace(/\s+/g, " "), 100);
+    const confirmed = await confirmDangerousAction({
+      action: `Permanently delete bullet ${bulletId} (${loc} playbook)`,
+      details: [
+        `File: ${playbookPath}`,
+        `Preview: "${preview}"`,
+        `Tip: Use --yes to confirm in non-interactive mode`,
+      ],
+      confirmPhrase: "DELETE",
+      yes: flags.yes,
+      json: flags.json,
+    });
+
+    if (!confirmed) {
+      const error = {
+        error: "Confirmation required for --hard deletion",
+        hint: `${cli} undo ${bulletId} --hard --yes`,
+      };
+      if (flags.json) {
+        console.log(JSON.stringify(error, null, 2));
+      } else {
+        console.error(chalk.red("Refusing to permanently delete without confirmation."));
+        console.log(chalk.gray(`Re-run with: ${cli} undo ${bulletId} --hard --yes`));
+        console.log(chalk.gray("Or omit --hard to un-deprecate instead."));
+      }
+      process.exit(1);
+    }
+
     // Hard delete - remove the bullet entirely
     const before = {
       deprecated: bullet.deprecated,
@@ -182,6 +215,8 @@ export async function undoCommand(
       success: true,
       bulletId,
       action: "hard-delete",
+      path: playbookPath,
+      preview,
       before,
       after: { deleted: true },
       message: `Permanently deleted bullet ${bulletId} from ${loc} playbook`
@@ -234,7 +269,9 @@ export async function undoCommand(
 
     // Also remove from blocklist(s) so it doesn't get re-blocked on next load
     await removeFromBlockedLog(bulletId, "~/.cass-memory/blocked.log");
-    await removeFromBlockedLog(bulletId, path.resolve(process.cwd(), ".cass", "blocked.log"));
+    if (repoDir) {
+      await removeFromBlockedLog(bulletId, path.join(repoDir, "blocked.log"));
+    }
 
     await savePlaybook(playbook, playbookPath);
 
@@ -266,6 +303,12 @@ function printUndoResult(result: UndoResult, bullet?: PlaybookBullet): void {
     console.log(chalk.red.bold("HARD DELETE"));
     console.log(chalk.gray("─".repeat(40)));
     console.log(`Bullet ${chalk.bold(result.bulletId)} has been permanently deleted.`);
+    if (result.path) {
+      console.log(`File: ${chalk.gray(result.path)}`);
+    }
+    if (result.preview) {
+      console.log(`Preview: ${chalk.cyan(`"${result.preview}"`)}`);
+    }
     console.log(chalk.yellow("This action cannot be undone."));
   } else if (result.action === "undo-feedback") {
     console.log(chalk.blue.bold("UNDO FEEDBACK"));

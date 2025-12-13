@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, checkAbort, isPermissionError, handlePermissionError } from "../utils.js";
+import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, checkAbort, isPermissionError, handlePermissionError } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -305,7 +305,8 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
           availableProviders,
           currentProvider,
           model: config.model,
-          semanticSearchEnabled: config.semanticSearchEnabled
+          semanticSearchEnabled: config.semanticSearchEnabled,
+          embeddingModel: config.embeddingModel
         },
       });
     } catch (err: any) {
@@ -650,9 +651,20 @@ export async function applyFixes(
   return results;
 }
 
-export async function doctorCommand(options: { json?: boolean; fix?: boolean }): Promise<void> {
+export async function doctorCommand(options: {
+  json?: boolean;
+  fix?: boolean;
+  dryRun?: boolean;
+  force?: boolean;
+  interactive?: boolean;
+  selfTest?: boolean;
+}): Promise<void> {
   const config = await loadConfig();
   const checks: Array<{ category: string; status: CheckStatus; message: string; details?: unknown }> = [];
+  const interactive = options.interactive !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const force = Boolean(options.force);
+  const dryRun = Boolean(options.dryRun);
+  const selfTest = Boolean(options.selfTest);
 
   // 1) cass integration
   const cassOk = cassAvailable(config.cassPath);
@@ -704,13 +716,13 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
 
     if (!hasStructure) {
       status = "warn";
-      message = "Not initialized. Run `cm init --repo` to enable project-level memory.";
+      message = `Not initialized. Run \`${getCliName()} init --repo\` to enable project-level memory.`;
     } else if (!isComplete) {
       status = "warn";
       const missing: string[] = [];
       if (!repoPlaybookExists) missing.push("playbook.yaml");
       if (!repoBlockedExists) missing.push("blocked.log");
-      message = `Partial setup. Missing: ${missing.join(", ")}. Run \`cm init --repo --force\` to complete.`;
+      message = `Partial setup. Missing: ${missing.join(", ")}. Run \`${getCliName()} init --repo --force\` to complete.`;
     } else {
       message = "Complete (.cass/playbook.yaml and .cass/blocked.log present)";
     }
@@ -775,16 +787,23 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
     });
   }
 
+  let overallStatus: OverallStatus = "healthy";
+  for (const check of checks) {
+    overallStatus = nextOverallStatus(overallStatus, check.status);
+  }
+
   if (options.json) {
-    console.log(JSON.stringify({ checks }, null, 2));
+    const payload: any = { checks };
+    if (selfTest) {
+      payload.selfTest = await runSelfTest(config);
+    }
+    console.log(JSON.stringify(payload, null, 2));
     return;
   }
 
   console.log(chalk.bold("\n🏥 System Health Check\n"));
-  let overallStatus: OverallStatus = "healthy";
   for (const check of checks) {
     console.log(`${statusIcon(check.status)} ${chalk.bold(check.category)}: ${check.message}`);
-    overallStatus = nextOverallStatus(overallStatus, check.status);
 
     if (check.category === "Sanitization Pattern Health" && check.details && (check.details as any).builtInMatches) {
       const details = check.details as {
@@ -809,15 +828,20 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
   else if (overallStatus === "degraded") console.log(chalk.yellow("System is running in degraded mode."));
   else console.log(chalk.red("System has critical issues."));
 
-  // Handle --fix option
-  if (options.fix && overallStatus !== "healthy") {
+  // Fix plan / apply
+  if (dryRun) {
+    console.log(chalk.bold("\n🔧 Fix Plan (Dry Run)\n"));
+    const issues = await detectFixableIssues();
+    await applyFixes(issues, { interactive: false, dryRun: true, force });
+  } else if (options.fix && overallStatus !== "healthy") {
     console.log(chalk.bold("\n🔧 Auto-Fix Mode\n"));
     const issues = await detectFixableIssues();
     if (issues.length > 0) {
-      await applyFixes(issues, { interactive: true });
+      await applyFixes(issues, { interactive, dryRun: false, force });
       console.log(chalk.cyan("\nRe-running health check to verify fixes...\n"));
       // Run doctor again to show updated status (non-recursive)
-      await doctorCommand({ json: false, fix: false });
+      await doctorCommand({ json: false, fix: false, selfTest });
+      return;
     } else {
       console.log(chalk.yellow("No auto-fixable issues detected."));
       console.log(chalk.cyan("Some issues may require manual intervention."));
@@ -827,7 +851,7 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
   }
   
   // 6) Run Self-Test (End-to-End Smoke Tests)
-  if (!options.json) {
+  if (selfTest) {
     console.log(chalk.bold("\n🧪 Running Self-Test...\n"));
     const selfTests = await runSelfTest(config);
     for (const test of selfTests) {
