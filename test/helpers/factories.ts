@@ -38,8 +38,15 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     minRelevanceScore: 0.1,
     maxRelatedSessions: 5,
     validationEnabled: true,
-    enrichWithCrossAgent: true,
+    crossAgent: {
+      enabled: false,
+      consentGiven: false,
+      consentDate: null,
+      agents: [],
+      auditLog: true
+    },
     semanticSearchEnabled: false,
+    embeddingModel: "Xenova/all-MiniLM-L6-v2",
     verbose: false,
     jsonOutput: false,
     sanitization: {
@@ -66,6 +73,10 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
   return {
     ...defaults,
     ...overrides,
+    crossAgent: {
+      ...defaults.crossAgent,
+      ...(overrides.crossAgent || {})
+    },
     sanitization: {
       ...defaults.sanitization,
       ...(overrides.sanitization || {})

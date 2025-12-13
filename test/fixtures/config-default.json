@@ -15,8 +15,15 @@
   "sessionLookbackDays": 7,
   "validationLookbackDays": 90,
   "validationEnabled": true,
-  "enrichWithCrossAgent": true,
+  "crossAgent": {
+    "enabled": false,
+    "consentGiven": false,
+    "consentDate": null,
+    "agents": [],
+    "auditLog": true
+  },
   "semanticSearchEnabled": false,
+  "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "verbose": false,
   "jsonOutput": false,
   "scoring": {
