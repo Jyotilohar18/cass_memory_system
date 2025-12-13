@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { execSync } from "node:child_process";
 import { generateContextResult } from "../../src/commands/context.js";
 import { applyOutcomeFeedback, OutcomeRecord } from "../../src/outcome.js";
 import { savePlaybook, createEmptyPlaybook } from "../../src/playbook.js";
@@ -13,6 +14,8 @@ async function withTempEnv(run: (ctx: { home: string; repo: string }) => Promise
   const prevCwd = process.cwd();
   try {
     process.env.HOME = home;
+    // Initialize git repo so resolveRepoDir() can find .cass directory
+    execSync("git init", { cwd: repo, stdio: "pipe" });
     process.chdir(repo);
     await run({ home, repo });
   } finally {

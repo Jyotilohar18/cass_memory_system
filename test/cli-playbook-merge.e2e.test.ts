@@ -8,10 +8,16 @@
 import { describe, it, expect } from "bun:test";
 import { writeFile, readFile, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import yaml from "yaml";
 import { loadMergedPlaybook } from "../src/playbook.js";
 import { loadConfig } from "../src/config.js";
 import { withTempCassHome, TestEnv } from "./helpers/temp.js";
+
+// Helper to initialize a git repo so resolveRepoDir() can find it
+function initGitRepo(dir: string): void {
+  execSync("git init", { cwd: dir, stdio: "pipe" });
+}
 
 // Helper to create a valid test playbook
 function createTestPlaybook(bullets: any[] = [], deprecatedPatterns: any[] = []) {
@@ -105,6 +111,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         // Change to repo directory
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
@@ -154,6 +163,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
 
@@ -196,6 +208,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           { pattern: "console\\.log", reason: "Use logger instead", deprecatedAt: now }
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
+
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
 
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
@@ -244,6 +259,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           })
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
+
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
 
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
@@ -306,6 +324,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         };
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
 
@@ -352,6 +373,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const repoPlaybook = createTestPlaybook(repoBullets);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
 
@@ -387,6 +411,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           createTestBullet({ id: "repo-unique", content: "Repo unique", category: "repo" })
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
+
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
 
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
@@ -431,6 +458,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
 
@@ -461,6 +491,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const repoPlaybook = createTestPlaybook([]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
+
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));
 
@@ -488,6 +521,9 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
 
         const repoPlaybook = createTestPlaybook([]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
+
+        // Initialize git repo so resolveRepoDir() can find it
+        initGitRepo(path.join(env.home, "test-repo"));
 
         const originalCwd = process.cwd();
         process.chdir(path.join(env.home, "test-repo"));

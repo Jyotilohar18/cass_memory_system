@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 import {
   createEmptyPlaybook,
   loadPlaybook,
@@ -53,6 +54,8 @@ describe("playbook.ts CRUD and loading", () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "cm-merge-"));
     const originalCwd = process.cwd();
     try {
+      // Initialize git repo so resolveRepoDir() can find it
+      execSync("git init", { cwd: tmpDir, stdio: "pipe" });
       process.chdir(tmpDir);
 
       const globalPath = path.join(tmpDir, "global.yaml");

@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 import {
   loadMergedPlaybook,
@@ -275,6 +276,8 @@ describe("Blocked Bullet Filtering - E2E", () => {
         process.env.HOME = home;
         await fs.mkdir(home, { recursive: true });
         await fs.mkdir(repo, { recursive: true });
+        // Initialize git repo so resolveRepoDir() can find .cass directory
+        execSync("git init", { cwd: repo, stdio: "pipe" });
         process.chdir(repo);
 
         const globalPath = path.join(home, ".cass-memory", "playbook.yaml");

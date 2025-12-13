@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { stat, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import yaml from "yaml";
 import os from "node:os";
 
@@ -76,6 +77,9 @@ async function setupTestEnvironment() {
   await mkdir(cassMemoryDir, { recursive: true });
   await mkdir(path.join(cassMemoryDir, "diary"), { recursive: true });
   await mkdir(repoCassDir, { recursive: true });
+
+  // Initialize git repo so resolveRepoDir() can find .cass directory
+  execSync("git init", { cwd: repo, stdio: "pipe" });
 
   // Create config
   const config = { schema_version: 1 };
