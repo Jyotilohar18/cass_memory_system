@@ -322,31 +322,22 @@ export async function generateDiaryFast(
 ): Promise<DiaryEntry> {
   log(`Generating diary (fast mode) for ${sessionPath}...`);
 
-  // 1. Export Session
-  const rawContent = await cassExport(sessionPath, "markdown", config.cassPath);
-  if (!rawContent) {
+  // 1. Export Session (Sanitized via cassExport)
+  const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
+  if (!sanitizedContent) {
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
 
-  // 2. Sanitize
-  const compiledPatterns = compileExtraPatterns(config.sanitization.extraPatterns || []);
-  const runtimeSanitizeConfig = {
-    enabled: config.sanitization.enabled,
-    extraPatterns: compiledPatterns,
-    auditLog: config.sanitization.auditLog
-  };
-  const sanitizedContent = sanitize(rawContent, runtimeSanitizeConfig);
-
-  // 3. Extract Metadata
+  // 2. Extract Metadata
   const metadata = extractSessionMetadata(sessionPath);
 
-  // 4. Fast Extraction (no LLM)
+  // 3. Fast Extraction (no LLM)
   const task = extractFirstUserMessage(sanitizedContent);
   const outcome = inferOutcome(sanitizedContent);
   const filesChanged = extractFilePaths(sanitizedContent);
   const summary = generateQuickSummary(sanitizedContent, task);
 
-  // 5. Assemble Entry
+  // 4. Assemble Entry
   const diary: DiaryEntry = {
     id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
@@ -364,7 +355,7 @@ export async function generateDiaryFast(
     relatedSessions: []
   };
 
-  // 6. Save
+  // 5. Save
   await saveDiary(diary, config);
   log(`Saved fast diary to ${expandPath(config.diaryDir)}/${diary.id}.json`);
 
@@ -384,32 +375,21 @@ export async function generateDiary(
     return generateDiaryFast(sessionPath, config);
   }
 
-  // 1. Export Session
-  const rawContent = await cassExport(sessionPath, "markdown", config.cassPath);
-  if (!rawContent) {
+  // 1. Export Session (Sanitized via cassExport)
+  const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
+  if (!sanitizedContent) {
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
-
-  // 2. Sanitize
-  const compiledPatterns = compileExtraPatterns(config.sanitization.extraPatterns || []);
-  
-  const runtimeSanitizeConfig = {
-    enabled: config.sanitization.enabled,
-    extraPatterns: compiledPatterns,
-    auditLog: config.sanitization.auditLog
-  };
-
-  const sanitizedContent = sanitize(rawContent, runtimeSanitizeConfig);
   
   const verification = verifySanitization(sanitizedContent);
   if (verification.containsPotentialSecrets) {
     warn(`[Diary] Potential secrets detected after sanitization in ${sessionPath}: ${verification.warnings.join(", ")}`);
   }
 
-  // 3. Extract Metadata
+  // 2. Extract Metadata
   const metadata = extractSessionMetadata(sessionPath);
 
-  // 4. LLM Extraction
+  // 3. LLM Extraction
   const ExtractionSchema = DiaryEntrySchema.omit({ 
     id: true, 
     sessionPath: true, 
@@ -425,7 +405,7 @@ export async function generateDiary(
     config
   );
 
-  // 5. Assemble Entry
+  // 4. Assemble Entry
   const diary: DiaryEntry = {
     id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
@@ -449,10 +429,10 @@ export async function generateDiary(
   ].join(" ");
   diary.searchAnchors = extractKeywords(anchorText);
 
-  // 7. Enrich (Cross-Agent)
+  // 5. Enrich (Cross-Agent)
   const enrichedDiary = await enrichWithRelatedSessions(diary, config);
 
-  // 8. Save
+  // 6. Save
   await saveDiary(enrichedDiary, config);
 
   return enrichedDiary;
