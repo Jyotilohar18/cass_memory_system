@@ -7,6 +7,8 @@ import {
   PlaybookBullet,
 } from "./types.js";
 import { atomicWrite, hashContent, resolveGlobalDir, warn } from "./utils.js";
+import { withLock } from "./lock.js";
+import { getOutputStyle } from "./output.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_CACHE_VERSION = "1.0";
@@ -14,16 +16,121 @@ export const EMBEDDING_CACHE_VERSION = "1.0";
 let embedderPromise: Promise<any> | null = null;
 let embedderModel: string | null = null;
 
-async function loadEmbedder(model: string): Promise<any> {
-  const { pipeline } = await import("@xenova/transformers");
-  return pipeline("feature-extraction", model);
+export interface ModelLoadProgress {
+  status: "initiate" | "download" | "progress" | "done" | "ready";
+  name?: string;
+  file?: string;
+  progress?: number;
+  loaded?: number;
+  total?: number;
 }
 
-export async function getEmbedder(model = DEFAULT_EMBEDDING_MODEL): Promise<any> {
+export type ProgressCallback = (progress: ModelLoadProgress) => void;
+
+/**
+ * Check if we should show progress output to the user.
+ * Progress is shown when stderr is a TTY and emojis are enabled.
+ */
+function shouldShowProgress(): boolean {
+  return Boolean(process.stderr?.isTTY);
+}
+
+/**
+ * Create a progress callback that writes to stderr.
+ * This keeps stdout clean for JSON output while still informing the user.
+ */
+function createStderrProgressCallback(): ProgressCallback {
+  let lastPercent = -1;
+  const style = getOutputStyle();
+  const downloadIcon = style.emoji ? "📥 " : "";
+  const checkIcon = style.emoji ? "✓ " : "";
+
+  return (progress: ModelLoadProgress) => {
+    if (progress.status === "initiate") {
+      process.stderr.write(`${downloadIcon}Downloading embedding model (one-time, ~23MB)...\n`);
+    } else if (progress.status === "progress" && typeof progress.progress === "number") {
+      const percent = Math.round(progress.progress);
+      // Only update every 5% to reduce visual noise
+      if (percent >= lastPercent + 5 || percent === 100) {
+        lastPercent = percent;
+        process.stderr.write(`\r${downloadIcon}Downloading: ${percent}%`);
+        if (percent === 100) {
+          process.stderr.write("\n");
+        }
+      }
+    } else if (progress.status === "ready") {
+      process.stderr.write(`${checkIcon}Embedding model ready\n`);
+    }
+  };
+}
+
+async function loadEmbedder(
+  model: string,
+  options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {}
+): Promise<any> {
+  const { pipeline } = await import("@xenova/transformers");
+
+  const showProgress = options.showProgress ?? shouldShowProgress();
+  const progressCallback = options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);
+
+  try {
+    const result = await pipeline("feature-extraction", model, {
+      progress_callback: progressCallback,
+    });
+
+    // Signal that model is ready
+    if (progressCallback) {
+      progressCallback({ status: "ready" });
+    }
+
+    return result;
+  } catch (error: any) {
+    // Check if this is a network error and we might have a cached model
+    const isNetworkError =
+      error?.message?.includes("fetch") ||
+      error?.message?.includes("network") ||
+      error?.message?.includes("ENOTFOUND") ||
+      error?.message?.includes("ECONNREFUSED");
+
+    if (isNetworkError) {
+      // Try loading from local cache only
+      try {
+        warn("[semantic] Network unavailable; attempting to use cached model...");
+        const result = await pipeline("feature-extraction", model, {
+          local_files_only: true,
+          progress_callback: progressCallback,
+        });
+        if (progressCallback) {
+          progressCallback({ status: "ready" });
+        }
+        return result;
+      } catch (cacheError: any) {
+        throw new Error(
+          `Embedding model not available offline. To enable offline use:\n` +
+          `  1. Run any 'cm' command with semantic search while online to download the model\n` +
+          `  2. The model will be cached in ~/.cache/huggingface/\n` +
+          `Original error: ${error.message}`
+        );
+      }
+    }
+
+    throw error;
+  }
+}
+
+export interface GetEmbedderOptions {
+  showProgress?: boolean;
+  progressCallback?: ProgressCallback;
+}
+
+export async function getEmbedder(
+  model = DEFAULT_EMBEDDING_MODEL,
+  options: GetEmbedderOptions = {}
+): Promise<any> {
   if (embedderPromise && embedderModel === model) return embedderPromise;
 
   embedderModel = model;
-  embedderPromise = loadEmbedder(model);
+  embedderPromise = loadEmbedder(model, options);
 
   // If the model load fails, allow retry on the next call.
   embedderPromise.catch(() => {
@@ -66,7 +173,10 @@ export async function batchEmbed(
     Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;
 
   const cleaned = texts.map((t) => (typeof t === "string" ? t.trim() : ""));
-  const output: number[][] = cleaned.map((t) => (t ? null : [])) as any;
+  const output: number[][] = new Array(cleaned.length);
+  for (let i = 0; i < cleaned.length; i++) {
+    if (!cleaned[i]) output[i] = [];
+  }
 
   const embedder = await getEmbedder(model);
 
@@ -103,7 +213,12 @@ export async function batchEmbed(
     }
   }
 
-  return output as number[][];
+  // Any remaining unset entries (should only happen if inputs changed unexpectedly) become empty embeddings.
+  for (let i = 0; i < output.length; i++) {
+    if (!Array.isArray(output[i])) output[i] = [];
+  }
+
+  return output;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -187,68 +302,51 @@ export async function loadOrComputeEmbeddingsForBullets(
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const cachePath = options.cachePath || getEmbeddingCachePath();
 
-  const cache = await loadEmbeddingCache({ cachePath, model });
+  // Use lock to prevent concurrent cache corruption
+  return withLock(cachePath, async () => {
+    const cache = await loadEmbeddingCache({ cachePath, model });
 
-  let reused = 0;
-  let computed = 0;
-  let skipped = 0;
+    let reused = 0;
+    let computed = 0;
+    let skipped = 0;
 
-  const toCompute: Array<{ bullet: PlaybookBullet; contentHash: string }> = [];
+    const toCompute: Array<{ bullet: PlaybookBullet; contentHash: string }> = [];
 
-  for (const bullet of bullets) {
-    if (!bullet?.id || !bullet?.content) {
-      skipped++;
-      continue;
-    }
-
-    const contentHash = hashContent(bullet.content);
-    const cached = cache.bullets[bullet.id];
-
-    if (
-      cached?.contentHash === contentHash &&
-      Array.isArray(cached.embedding) &&
-      cached.embedding.length > 0
-    ) {
-      bullet.embedding = cached.embedding;
-      reused++;
-      continue;
-    }
-
-    toCompute.push({ bullet, contentHash });
-  }
-
-  if (model !== "none" && toCompute.length > 0) {
-    try {
-      const embeddings = await batchEmbed(
-        toCompute.map((x) => x.bullet.content),
-        32,
-        { model }
-      );
-
-      for (let i = 0; i < toCompute.length; i++) {
-        const { bullet, contentHash } = toCompute[i];
-        const embedding = embeddings[i] || [];
-
-        if (!Array.isArray(embedding) || embedding.length === 0) {
-          skipped++;
-          continue;
-        }
-
-        bullet.embedding = embedding;
-        cache.bullets[bullet.id] = {
-          contentHash,
-          embedding,
-          computedAt: new Date().toISOString(),
-        };
-        computed++;
+    for (const bullet of bullets) {
+      if (!bullet?.id || !bullet?.content) {
+        skipped++;
+        continue;
       }
-    } catch (err: any) {
-      warn(`[semantic] batchEmbed failed; falling back to per-text embedding. ${err?.message || ""}`.trim());
 
-      for (const { bullet, contentHash } of toCompute) {
-        try {
-          const embedding = await embedText(bullet.content, { model });
-          if (embedding.length === 0) {
+      const contentHash = hashContent(bullet.content);
+      const cached = cache.bullets[bullet.id];
+
+      if (
+        cached?.contentHash === contentHash &&
+        Array.isArray(cached.embedding) &&
+        cached.embedding.length > 0
+      ) {
+        bullet.embedding = cached.embedding;
+        reused++;
+        continue;
+      }
+
+      toCompute.push({ bullet, contentHash });
+    }
+
+    if (model !== "none" && toCompute.length > 0) {
+      try {
+        const embeddings = await batchEmbed(
+          toCompute.map((x) => x.bullet.content),
+          32,
+          { model }
+        );
+
+        for (let i = 0; i < toCompute.length; i++) {
+          const { bullet, contentHash } = toCompute[i];
+          const embedding = embeddings[i] || [];
+
+          if (!Array.isArray(embedding) || embedding.length === 0) {
             skipped++;
             continue;
           }
@@ -260,17 +358,40 @@ export async function loadOrComputeEmbeddingsForBullets(
             computedAt: new Date().toISOString(),
           };
           computed++;
-        } catch (innerErr: any) {
-          warn(`[semantic] embedText failed for bullet ${bullet.id}: ${innerErr?.message || innerErr}`);
-          skipped++;
+        }
+      } catch (err: any) {
+        warn(`[semantic] batchEmbed failed; falling back to per-text embedding. ${err?.message || ""}`.trim());
+
+        for (const { bullet, contentHash } of toCompute) {
+          try {
+            const embedding = await embedText(bullet.content, { model });
+            if (embedding.length === 0) {
+              skipped++;
+              continue;
+            }
+
+            bullet.embedding = embedding;
+            cache.bullets[bullet.id] = {
+              contentHash,
+              embedding,
+              computedAt: new Date().toISOString(),
+            };
+            computed++;
+          } catch (innerErr: any) {
+            warn(`[semantic] embedText failed for bullet ${bullet.id}: ${innerErr?.message || innerErr}`);
+            skipped++;
+          }
         }
       }
     }
-  }
 
-  await saveEmbeddingCache(cache, { cachePath });
+    // Only save if we computed something or if we want to ensure the cache file exists
+    if (computed > 0 || !await fs.access(cachePath).then(() => true).catch(() => false)) {
+      await saveEmbeddingCache(cache, { cachePath });
+    }
 
-  return { cache, stats: { reused, computed, skipped } };
+    return { cache, stats: { reused, computed, skipped } };
+  });
 }
 
 export async function loadOrComputeEmbeddings(
@@ -331,4 +452,67 @@ export async function findSimilarBulletsSemantic(
 
   matches.sort((a, b) => b.similarity - a.similarity);
   return matches.slice(0, topK);
+}
+
+export interface SemanticDuplicatePair {
+  pair: [string, string];
+  similarity: number;
+}
+
+export async function findSemanticDuplicates(
+  bullets: PlaybookBullet[],
+  threshold = 0.85,
+  options: { model?: string; cachePath?: string; ensureEmbeddings?: boolean } = {}
+): Promise<SemanticDuplicatePair[]> {
+  const cleanedThreshold =
+    typeof threshold === "number" && Number.isFinite(threshold) ? threshold : 0.85;
+  const minSimilarity = Math.min(1, Math.max(0, cleanedThreshold));
+
+  const candidates = bullets.filter(
+    (b) => Boolean(b?.id) && Boolean(b?.content)
+  );
+  if (candidates.length < 2) return [];
+
+  const model = options.model || DEFAULT_EMBEDDING_MODEL;
+
+  const ensureEmbeddings = options.ensureEmbeddings !== false;
+  if (ensureEmbeddings) {
+    const allHaveEmbeddings = candidates.every(
+      (b) => Array.isArray(b.embedding) && b.embedding.length > 0
+    );
+
+    if (!allHaveEmbeddings && model !== "none") {
+      await loadOrComputeEmbeddingsForBullets(candidates, {
+        model,
+        cachePath: options.cachePath,
+      });
+    }
+  }
+
+  const pairs: SemanticDuplicatePair[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const a = candidates[i];
+    if (!Array.isArray(a.embedding) || a.embedding.length === 0) continue;
+
+    for (let j = i + 1; j < candidates.length; j++) {
+      const b = candidates[j];
+      if (!Array.isArray(b.embedding) || b.embedding.length === 0) continue;
+
+      const similarity = cosineSimilarity(a.embedding, b.embedding);
+      if (similarity >= minSimilarity) {
+        pairs.push({ pair: [a.id, b.id], similarity });
+      }
+    }
+  }
+
+  pairs.sort((x, y) => {
+    const diff = y.similarity - x.similarity;
+    if (diff !== 0) return diff;
+    const a = `${x.pair[0]}|${x.pair[1]}`;
+    const b = `${y.pair[0]}|${y.pair[1]}`;
+    return a.localeCompare(b);
+  });
+
+  return pairs;
 }
