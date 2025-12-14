@@ -24,7 +24,8 @@ import {
   jaccardSimilarity,
   atomicWrite,
   extractAgentFromPath,
-  resolveRepoDir
+  resolveRepoDir,
+  tokenize
 } from "./utils.js";
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
@@ -300,19 +301,6 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
   }
 }
 
-async function isBlockedContent(content: string, blockedLog: BlockedEntry[]): Promise<boolean> {
-  const hash = hashContent(content);
-
-  for (const entry of blockedLog) {
-    if (hashContent(entry.content) === hash) return true;
-    if (jaccardSimilarity(content, entry.content) > 0.85) {
-      log(`Blocked content: "${content.slice(0, 50)}"... matches blocked "${entry.content.slice(0, 50)}"...`, true);
-      return true;
-    }
-  }
-  return false;
-}
-
 export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {
   if (!repo) return global;
   
@@ -373,9 +361,56 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   const allBlocked = [...globalBlocked, ...globalToxic, ...repoBlocked, ...repoToxic];
 
   if (allBlocked.length > 0) {
+    // Optimization: Deduplicate blocked entries by content hash
+    const uniqueBlocked = new Map<string, BlockedEntry>();
+    for (const entry of allBlocked) {
+      uniqueBlocked.set(hashContent(entry.content), entry);
+    }
+    const deduplicatedBlocked = Array.from(uniqueBlocked.values());
+
+    // Optimization: Pre-compute hashes and tokens for blocked entries
+    const blockedMeta = deduplicatedBlocked.map(entry => ({
+      entry,
+      hash: hashContent(entry.content),
+      tokens: new Set(tokenize(entry.content))
+    }));
+
     for (const b of merged.bullets) {
       if (b.deprecated) continue;
-      if (await isBlockedContent(b.content, allBlocked)) {
+      
+      const bHash = hashContent(b.content);
+      const bTokens = tokenize(b.content);
+      const bTokenSet = new Set(bTokens);
+
+      let isBlocked = false;
+
+      for (const meta of blockedMeta) {
+        // 1. Exact Match
+        if (meta.hash === bHash) {
+          isBlocked = true;
+          break;
+        }
+
+        // 2. Semantic Match (Jaccard)
+        if (bTokens.length === 0 || meta.tokens.size === 0) continue;
+
+        const maxPossibleIntersection = Math.min(bTokenSet.size, meta.tokens.size);
+        const minPossibleUnion = Math.max(bTokenSet.size, meta.tokens.size);
+        
+        // Fast skip
+        if (maxPossibleIntersection / minPossibleUnion <= 0.85) continue;
+
+        const intersectionSize = [...bTokenSet].filter(x => meta.tokens.has(x)).length;
+        const unionSize = new Set([...bTokenSet, ...meta.tokens]).size;
+
+        if (unionSize > 0 && (intersectionSize / unionSize) > 0.85) {
+          log(`Blocked content: "${b.content.slice(0, 50)}"... matches blocked "${meta.entry.content.slice(0, 50)}"...`, true);
+          isBlocked = true;
+          break;
+        }
+      }
+
+      if (isBlocked) {
         // Keep state fields consistent with other deprecations
         deprecateBullet(merged, b.id, "BLOCKED_CONTENT");
       }
