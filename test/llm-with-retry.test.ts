@@ -25,14 +25,15 @@ describe("LLM_RETRY_CONFIG", () => {
 });
 
 describe("llmWithRetry", () => {
-  let consoleWarnSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    // llmWithRetry uses warn() which uses console.error()
+    consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    consoleWarnSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   });
 
   it("returns result on successful operation", async () => {
@@ -47,7 +48,7 @@ describe("llmWithRetry", () => {
     const operation = mock(() => Promise.resolve({ data: "test" }));
     await llmWithRetry(operation, "testOperation");
 
-    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
   it("retries on rate_limit_exceeded error", async () => {
@@ -65,7 +66,7 @@ describe("llmWithRetry", () => {
 
     expect(result).toBe("success after retry");
     expect(operation).toHaveBeenCalledTimes(2);
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
   });
 
   it("retries on server_error", async () => {
@@ -183,7 +184,7 @@ describe("llmWithRetry", () => {
 
     // maxRetries is 3, so total attempts = 1 (initial) + 3 (retries) = 4
     expect(operation).toHaveBeenCalledTimes(4);
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(3);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(3);
   }, 20000); // Extended timeout: 3 retries with exponential backoff = ~14s
 
   it("does not retry non-retryable errors", async () => {
@@ -192,7 +193,7 @@ describe("llmWithRetry", () => {
     await expect(llmWithRetry(operation, "invalidKeyOp")).rejects.toThrow("Invalid API key");
 
     expect(operation).toHaveBeenCalledTimes(1);
-    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
   it("does not retry syntax errors", async () => {
@@ -223,8 +224,10 @@ describe("llmWithRetry", () => {
 
     await llmWithRetry(operation, "myCustomOperation");
 
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
-    const logMessage = consoleWarnSpy.mock.calls[0][0] as string;
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    // warn() calls console.error(prefix, message)
+    // We check the second argument for the message content
+    const logMessage = consoleErrorSpy.mock.calls[0][1] as string;
     expect(logMessage).toContain("[LLM]");
     expect(logMessage).toContain("myCustomOperation");
     expect(logMessage).toContain("attempt 1");
@@ -298,7 +301,7 @@ describe("llmWithRetry", () => {
 
     expect(result).toBe("finally succeeded");
     expect(operation).toHaveBeenCalledTimes(4);
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(3);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(3);
   }, 20000); // Extended timeout: 3 retries with exponential backoff = ~14s
 
   it("case-insensitive error matching", async () => {

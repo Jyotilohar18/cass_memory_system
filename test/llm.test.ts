@@ -119,17 +119,17 @@ describe("validateApiKey", () => {
   beforeEach(() => saveEnv());
   afterEach(() => restoreEnv());
 
-  // We capture console.warn to verify warnings
+  // We capture console.error to verify warnings (warn() uses console.error)
   let warnMessages: string[] = [];
-  const originalWarn = console.warn;
+  const originalError = console.error;
 
   beforeEach(() => {
     warnMessages = [];
-    console.warn = (...args: any[]) => warnMessages.push(args.join(" "));
+    console.error = (...args: any[]) => warnMessages.push(args.join(" "));
   });
 
   afterEach(() => {
-    console.warn = originalWarn;
+    console.error = originalError;
   });
 
   it("does not warn for valid OpenAI key format", () => {

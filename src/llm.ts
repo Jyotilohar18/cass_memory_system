@@ -9,7 +9,7 @@ import { generateObject, type LanguageModel, type GenerateObjectResult } from "a
 import { z } from "zod";
 import type { Config, DiaryEntry } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
-import { truncateForContext } from "./utils.js";
+import { truncateForContext, warn } from "./utils.js";
 
 /**
  * Supported LLM provider names
@@ -74,7 +74,7 @@ export function validateApiKey(provider: string): void {
 
   const expectedPrefix = KEY_PREFIX_MAP[normalized];
   if (expectedPrefix && !apiKey.startsWith(expectedPrefix)) {
-    console.warn(
+    warn(
       `Warning: ${provider} API key does not start with '${expectedPrefix}' - this may be incorrect`
     );
   }
@@ -83,7 +83,7 @@ export function validateApiKey(provider: string): void {
   const lowerKey = apiKey.toLowerCase();
   for (const placeholder of placeholders) {
     if (lowerKey.includes(placeholder.toLowerCase())) {
-      console.warn(
+      warn(
         `Warning: ${provider} API key appears to contain a placeholder ('${placeholder}')`
       );
       break;
@@ -91,7 +91,7 @@ export function validateApiKey(provider: string): void {
   }
 
   if (apiKey.length < 20) {
-    console.warn(
+    warn(
       `Warning: ${provider} API key seems too short (${apiKey.length} chars) - this may be incorrect`
     );
   }
@@ -368,7 +368,7 @@ export async function llmWithRetry<T>(
         LLM_RETRY_CONFIG.maxDelayMs
       );
       
-      console.warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
+      warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -438,8 +438,19 @@ export async function generateObjectSafe<T>(
       // If it's a budget error, don't retry
       if (err.message.includes("budget exceeded")) throw err;
       
+      // Check if it's a network/rate-limit error that llmWithRetry should handle
+      const isNetworkOrApiError = LLM_RETRY_CONFIG.retryableErrors.some(e => 
+        err.message?.toLowerCase().includes(e.toLowerCase()) || 
+        err.code?.toString().includes(e) ||
+        err.statusCode?.toString().includes(e)
+      );
+
+      if (isNetworkOrApiError) {
+         throw err; // Let llmWithRetry handle backoff
+      }
+
       if (attempt < maxAttempts) {
-        console.warn(`[LLM] generateObjectSafe attempt ${attempt} failed: ${err.message}. Retrying...`);
+        warn(`[LLM] generateObjectSafe attempt ${attempt} failed: ${err.message}. Retrying...`);
       }
     }
   }
@@ -699,9 +710,9 @@ export async function llmWithFallback<T>(
       errors.push({ provider, error: errorMsg });
 
       if (isLastProvider) {
-        console.warn(`[LLM] ${provider} failed: ${errorMsg}. No more providers to try.`);
+        warn(`[LLM] ${provider} failed: ${errorMsg}. No more providers to try.`);
       } else {
-        console.warn(`[LLM] ${provider} failed: ${errorMsg}. Trying next provider...`);
+        warn(`[LLM] ${provider} failed: ${errorMsg}. Trying next provider...`);
       }
     }
   }
