@@ -93,7 +93,8 @@ export function sanitize(
 
   const applyPattern = (pattern: RegExp, replacement: string, label?: string) => {
     // Ensure global flag is set for replaceAll-like behavior
-    const matcher = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+    // Optimization: Reuse existing RegExp if it already has 'g' flag
+    const matcher = pattern.global ? pattern : new RegExp(pattern.source, pattern.flags + "g");
     
     // We only count if auditing is enabled to avoid overhead
     if (config.auditLog) {

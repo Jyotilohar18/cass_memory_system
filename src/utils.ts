@@ -2529,20 +2529,7 @@ export async function withAbortCheck<T>(
   checkIntervalMs?: number
 ): Promise<T> {
   checkAbort();
-  if (checkIntervalMs) {
-    const intervalId = setInterval(() => {
-      if (globalAbortController.signal.aborted) {
-        clearInterval(intervalId);
-      }
-    }, checkIntervalMs);
-    try {
-      const result = await operation();
-      checkAbort();
-      return result;
-    } finally {
-      clearInterval(intervalId);
-    }
-  }
+  // checkIntervalMs is deprecated/unused as we cannot interrupt promises externally
   const result = await operation();
   checkAbort();
   return result;

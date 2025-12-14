@@ -89,6 +89,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     } else {
       logError(`Audit failed: ${err.message}`);
     }
-    process.exit(1);
+    // Don't kill the process - let the caller handle the error or let it bubble up
+    throw err;
   }
 }

@@ -124,7 +124,12 @@ describe("E2E: Performance (Large Scale)", () => {
     // Step 0: init
     logger.startStep("init");
     const init = runCmSync(["init", "--json"], testDir);
-    logger.step("init", "info", "cm init completed", init);
+    logger.step("init", "info", "cm init completed", {
+      exitCode: init.exitCode,
+      durationMs: init.durationMs,
+      stdout: init.stdout,
+      stderr: init.stderr,
+    });
     expect(init.exitCode).toBe(0);
     patchCassPathToNonexistent(testDir);
     logger.endStep("init", true);
@@ -167,7 +172,12 @@ describe("E2E: Performance (Large Scale)", () => {
     // Step 2: single context query timing
     logger.startStep("context-single");
     const single = runCmSync(["context", "typescript error handling", "--json"], testDir);
-    logger.step("context-single", "info", "cm context (single) completed", single);
+    logger.step("context-single", "info", "cm context (single) completed", {
+      exitCode: single.exitCode,
+      durationMs: single.durationMs,
+      stdout: single.stdout,
+      stderr: single.stderr,
+    });
     expect(single.exitCode).toBe(0);
     expect(single.durationMs).toBeLessThan(15000);
 
@@ -218,11 +228,15 @@ describe("E2E: Performance (Large Scale)", () => {
     expect(typeof targetBulletId).toBe("string");
 
     const why = runCmSync(["why", targetBulletId, "--json"], testDir);
-    logger.step("why-with-diaries", "info", "cm why completed", why);
+    logger.step("why-with-diaries", "info", "cm why completed", {
+      exitCode: why.exitCode,
+      durationMs: why.durationMs,
+      stdout: why.stdout,
+      stderr: why.stderr,
+    });
     expect(why.exitCode).toBe(0);
     expect(why.durationMs).toBeLessThan(15000);
     expect(() => JSON.parse(why.stdout)).not.toThrow();
     logger.endStep("why-with-diaries", true);
   }, { timeout: 120000 });
 });
-

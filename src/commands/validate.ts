@@ -24,8 +24,7 @@ export async function validateCommand(
   options: ValidateOptions = {}
 ): Promise<void> {
   if (!proposedRule || proposedRule.trim().length === 0) {
-    console.error(chalk.red("Error: Proposed rule text is required"));
-    process.exit(1);
+    throw new Error("Proposed rule text is required");
   }
 
   const config = await loadConfig();
