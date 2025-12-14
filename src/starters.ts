@@ -259,10 +259,12 @@ function normalizeBullet(
   index: number
 ): PlaybookBullet {
   const timestamp = now();
+  const content = bullet.content || ""; // Handle missing content gracefully
+  
   return {
     id: stableStarterId(def.name, bullet, index),
-    content: bullet.content,
-    category: bullet.category,
+    content: content,
+    category: bullet.category || "general",
     kind: bullet.kind || "workflow_rule",
     type: bullet.type || "rule",
     isNegative: Boolean(bullet.isNegative),
@@ -283,7 +285,7 @@ function normalizeBullet(
     sourceSessions: [`${STARTER_SESSION_TAG}:${def.name}`],
     sourceAgents: [STARTER_SESSION_TAG],
     tags: bullet.tags || [],
-    searchPointer: bullet.content.slice(0, 80)
+    searchPointer: content.slice(0, 80)
   };
 }
 

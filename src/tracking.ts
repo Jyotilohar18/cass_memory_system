@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { ProcessedEntry } from "./types.js";
-import { ensureDir, fileExists, expandPath, now, atomicWrite, getCliName } from "./utils.js";
+import { ensureDir, fileExists, expandPath, now, atomicWrite, getCliName, withLock } from "./utils.js";
 import { sanitize } from "./sanitize.js";
 
 // -----------------------------------------------------------------------------
@@ -176,7 +176,10 @@ export async function trackEvent<T extends UsageEventType>(
 
     const logPath = getUsageLogPath();
     await ensureDir(path.dirname(logPath));
-    await fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf-8");
+    
+    await withLock(logPath, async () => {
+      await fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf-8");
+    });
   } catch (error) {
     // Fire-and-forget: log error but don't propagate
     console.error(`[${getCliName()}] Failed to track event: ${error}`);
@@ -464,24 +467,38 @@ export class ProcessedLog {
     await atomicWrite(this.logPath, lines.join("\n"));
   }
 
-  async append(entry: ProcessedEntry): Promise<void> {
+  async append(entry: ProcessedEntry, options?: { skipLock?: boolean }): Promise<void> {
     this.entries.set(entry.sessionPath, entry);
-    
+
     const line = JSON.stringify(entry);
     await ensureDir(path.dirname(this.logPath));
-    
-    // Check if file exists to add header if needed
-    const exists = await fileExists(this.logPath);
-    if (!exists) {
-      const header = "# JSONL format: {\"sessionPath\":..., \"processedAt\":...}\n";
-      await fs.writeFile(this.logPath, header + line + "\n", "utf-8");
+
+    const doAppend = async () => {
+      // Check if file exists to add header if needed
+      const exists = await fileExists(this.logPath);
+      if (!exists) {
+        const header = "# JSONL format: {\"sessionPath\":..., \"processedAt\":...}\n";
+        await fs.writeFile(this.logPath, header + line + "\n", "utf-8");
+      } else {
+        await fs.appendFile(this.logPath, line + "\n", "utf-8");
+      }
+    };
+
+    // Skip lock if caller already holds it (e.g., orchestrator)
+    if (options?.skipLock) {
+      await doAppend();
     } else {
-      await fs.appendFile(this.logPath, line + "\n", "utf-8");
+      // Use withLock to safely append to the log
+      await withLock(this.logPath, doAppend);
     }
   }
 
   has(sessionPath: string): boolean {
     return this.entries.has(sessionPath);
+  }
+
+  get(sessionPath: string): ProcessedEntry | undefined {
+    return this.entries.get(sessionPath);
   }
 
   add(entry: ProcessedEntry): void {

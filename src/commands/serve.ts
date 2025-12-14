@@ -87,7 +87,7 @@ const TOOL_DEFS = [
       type: "object",
       properties: {
         sessionId: { type: "string" },
-        outcome: { type: "string", description: "success | failure | partial" },
+        outcome: { type: "string", description: "success | failure | mixed" },
         rulesUsed: { type: "array", items: { type: "string" } },
         notes: { type: "string" },
         task: { type: "string" },
@@ -239,8 +239,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
     }
     case "cm_outcome": {
       assertArgs(args, { outcome: "string", sessionId: "string" });
-      if (!["success", "failure", "partial"].includes(args.outcome)) {
-        throw new Error("outcome must be success | failure | partial");
+      if (!["success", "failure", "mixed", "partial"].includes(args.outcome)) {
+        throw new Error("outcome must be success | failure | mixed | partial");
       }
       const config = await loadConfig();
       return recordOutcome({

@@ -10,6 +10,7 @@ const bullet = (content: string): PlaybookBullet => ({
   type: "rule",
   isNegative: false,
   scope: "global",
+  source: "learned",
   state: "active",
   maturity: "candidate",
   createdAt: new Date().toISOString(),
@@ -17,10 +18,10 @@ const bullet = (content: string): PlaybookBullet => ({
   helpfulCount: 0,
   harmfulCount: 0,
   feedbackEvents: [],
+  confidenceDecayHalfLifeDays: 90,
   deprecated: false,
   pinned: false,
   tags: [],
-  confidenceDecayHalfLifeDays: 90,
   sourceSessions: [],
   sourceAgents: []
 });

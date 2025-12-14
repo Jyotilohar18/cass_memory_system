@@ -194,7 +194,7 @@ describe("withLock - Lock Contention", () => {
 
       // Manually create lock
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
 
       // Start operation that will need to wait
       const startTime = Date.now();
@@ -271,7 +271,7 @@ describe("withLock - Stale Lock Detection", () => {
 
       // Create a lock dir with old mtime
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
       
       const oldTime = Date.now() - 35_000; // 35 seconds ago
       const { utimes } = await import("node:fs/promises");
@@ -291,7 +291,7 @@ describe("withLock - Stale Lock Detection", () => {
 
       // Create a lock dir with mtime 2s ago
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
       const twoSecondsAgo = Date.now() - 2_000;
       const { utimes } = await import("node:fs/promises");
       await utimes(lockPath, twoSecondsAgo / 1000, twoSecondsAgo / 1000);
@@ -307,6 +307,21 @@ describe("withLock - Stale Lock Detection", () => {
     });
   });
 
+  it("removes abandoned lock directories even when fresh", async () => {
+    await withTempDir("lock-abandoned", async (tempDir) => {
+      const targetPath = join(tempDir, "test.txt");
+      await writeFile(targetPath, "content");
+      const lockPath = `${targetPath}.lock.d`;
+
+      // Create a fresh lock dir with a PID that should not exist.
+      await mkdir(lockPath);
+      await writeFile(join(lockPath, "pid"), "999999");
+
+      const result = await withLock(targetPath, async () => "abandoned removed");
+      expect(result).toBe("abandoned removed");
+    });
+  });
+
   it("does not remove fresh lock directories", async () => {
     await withTempDir("lock-fresh", async (tempDir) => {
       const targetPath = join(tempDir, "test.txt");
@@ -315,7 +330,7 @@ describe("withLock - Stale Lock Detection", () => {
 
       // Create a fresh lock
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
 
       // Keep the lock fresh
       const { utimes } = await import("node:fs/promises");
@@ -467,7 +482,7 @@ describe("withLock - Options", () => {
 
       // Create blocking lock
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
 
       const startTime = Date.now();
 
@@ -510,7 +525,7 @@ describe("withLock - Options", () => {
 
       // Create blocking lock
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), "999999");
+      await writeFile(join(lockPath, "pid"), process.pid.toString());
 
       // Keep lock fresh
       const { utimes } = await import("node:fs/promises");

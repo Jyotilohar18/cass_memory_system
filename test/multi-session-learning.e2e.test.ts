@@ -15,7 +15,8 @@ import path from "node:path";
 import os from "node:os";
 
 import { reflectOnSession, ReflectionResult } from "../src/reflect.js";
-import { curatePlaybook, CurationResult } from "../src/curate.js";
+import { curatePlaybook } from "../src/curate.js";
+import { CurationResult } from "../src/types.js";
 import { createEmptyPlaybook, savePlaybook, loadPlaybook } from "../src/playbook.js";
 import { createTestConfig, createTestBullet, createTestPlaybook } from "./helpers/index.js";
 import { createTestLogger, TestLogger } from "./helpers/logger.js";

@@ -27,14 +27,17 @@ import {
 import { 
   generateDiaryId, 
   extractKeywords, 
+  hashContent,
   now, 
   ensureDir, 
   expandPath,
   log,
   warn,
   error as logError,
-  atomicWrite
+  atomicWrite,
+  resolveRepoDir
 } from "./utils.js";
+import { withLock } from "./lock.js";
 
 // --- Helpers ---
 
@@ -50,7 +53,15 @@ async function appendCrossAgentAuditLog(
   try {
     if (config.crossAgent?.auditLog === false) return;
 
-    const logPath = expandPath("~/.cass-memory/privacy-audit.jsonl");
+    // Use resolveRepoDir to check for repo context
+    const repoDir = await resolveRepoDir();
+    const repoLog = repoDir ? path.join(repoDir, "privacy-audit.jsonl") : null;
+    
+    // Fall back to global log if not in repo or repo-level logging disabled (policy)
+    const logPath = repoLog
+      ? repoLog
+      : expandPath("~/.cass-memory/privacy-audit.jsonl");
+
     await ensureDir(path.dirname(logPath));
 
     const relatedAgents = Array.from(
@@ -67,7 +78,10 @@ async function appendCrossAgentAuditLog(
       allowlistAgents: (config.crossAgent?.agents || []).map(normalizeAgentName).filter(Boolean),
     };
 
-    await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
+    // Use withLock to safely append to audit log
+    await withLock(logPath, async () => {
+      await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
+    });
   } catch {
     // Best-effort: privacy auditing must never break diary generation.
   }
@@ -469,7 +483,27 @@ export async function findDiaryBySession(
       ? path.resolve(expandPath(sessionPath))
       : path.resolve(base, sessionPath);
 
-    const diaries = await loadAllDiaries(diaryDir);
+    // Optimization: Check global processed log first to avoid scanning thousands of files
+    try {
+      const { getProcessedLogPath, ProcessedLog } = await import("./tracking.js");
+      const globalLogPath = getProcessedLogPath(); 
+      const pLog = new ProcessedLog(globalLogPath);
+      await pLog.load();
+      
+      const entry = pLog.get(target);
+      if (entry && entry.diaryId) {
+        // Found indexed diary ID, load directly
+        // We mock the config object since loadDiary only needs diaryDir
+        const loaded = await loadDiary(entry.diaryId, { diaryDir } as Config);
+        if (loaded) return loaded;
+      }
+    } catch {
+      // Ignore index errors, fall back to scan
+    }
+
+    // Load all diaries to find the match (limit set high to ensure we search history)
+    // In a future optimization, we should maintain a sessionPath -> diaryId index
+    const diaries = await loadAllDiaries(diaryDir, 10000);
     const match = diaries.find((d) => d.sessionPath && path.resolve(expandPath(d.sessionPath)) === target);
     return match || null;
   } catch (err: any) {
@@ -509,11 +543,27 @@ export async function loadAllDiaries(diaryDir: string, limit = 100): Promise<Dia
 
   try {
     const files = await fs.readdir(expanded);
-    const jsonFiles = files
-      .filter(f => f.endsWith(".json"))
-      .slice(0, limit * 2); // Read extra to account for validation failures
+    
+    // Sort files by mtime to get most recent first
+    const fileStats = await Promise.all(
+      files
+        .filter(f => f.endsWith(".json"))
+        .map(async f => {
+          try {
+            const stats = await fs.stat(path.join(expanded, f));
+            return { name: f, mtime: stats.mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+    );
 
-    for (const file of jsonFiles) {
+    const sortedFiles = fileStats
+      .filter((f): f is { name: string; mtime: number } => f !== null)
+      .sort((a, b) => b.mtime - a.mtime)
+      .map(f => f.name);
+
+    for (const file of sortedFiles) {
       if (entries.length >= limit) break;
 
       try {
@@ -527,12 +577,12 @@ export async function loadAllDiaries(diaryDir: string, limit = 100): Promise<Dia
       }
     }
 
-    // Sort by timestamp, most recent first
+    // Double-check sort by internal timestamp in case mtime was touched
     entries.sort((a, b) =>
       new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
 
-    return entries.slice(0, limit);
+    return entries;
   } catch (err: any) {
     if (err.code === "ENOENT") {
       return [];

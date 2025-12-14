@@ -4,6 +4,7 @@ import {
   handleCassUnavailable, 
   cassNeedsIndex,
   safeCassSearch,
+  safeCassSearchWithDegraded,
   cassExport,
   cassExpand,
   cassTimeline,
@@ -67,6 +68,19 @@ describe("cass.ts core functions (stubbed)", () => {
       
       expect(hits).toHaveLength(1);
       expect(hits[0].source_path).toBe("test.ts");
+    });
+  });
+
+  it.serial("safeCassSearchWithDegraded classifies INDEX_MISSING (no auto-repair)", async () => {
+    await withTempDir("cass-search-index-missing", async (dir) => {
+      const cassPath = await makeCassStub(dir, { exitCode: CASS_EXIT_CODES.INDEX_MISSING, search: "[]" });
+      const config = createTestConfig();
+
+      const result = await safeCassSearchWithDegraded("query", { limit: 1 }, cassPath, config);
+
+      expect(result.hits).toEqual([]);
+      expect(result.degraded?.reason).toBe("INDEX_MISSING");
+      expect(result.degraded?.available).toBe(false);
     });
   });
 

@@ -10,7 +10,7 @@ import {
   DecisionLogEntry
 } from "./types.js";
 import { runReflector } from "./llm.js";
-import { log, now } from "./utils.js";
+import { log, now, hashContent } from "./utils.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
 
@@ -115,11 +115,15 @@ Snippet: "${h.snippet}"
 // --- Helper: Deduplication ---
 
 export function hashDelta(delta: PlaybookDelta): string {
+  // Normalize content for hashing to prevent duplicates differing only by case/whitespace
+  const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+
   if (delta.type === "add") {
-    return `add:${(delta.bullet.content || "").toLowerCase()}`;
+    // Category differences shouldn't allow duplicate rule content to re-enter the system.
+    return `add:${hashContent(delta.bullet.content)}`;
   }
   if (delta.type === "replace") {
-    return `replace:${delta.bulletId}:${(delta.newContent || "").toLowerCase()}`;
+    return `replace:${delta.bulletId}:${normalize(delta.newContent)}`;
   }
   
   // Only types with bulletId fall through here
@@ -132,6 +136,7 @@ export function hashDelta(delta: PlaybookDelta): string {
     return `merge:${[...delta.bulletIds].sort().join(",")}`;
   }
   
+  // Fallback for unexpected types
   return JSON.stringify(delta);
 }
 

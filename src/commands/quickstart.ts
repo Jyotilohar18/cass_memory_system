@@ -28,14 +28,19 @@ Run this before starting any non-trivial task. It returns:
 - **historySnippets**: Past sessions that solved similar problems
 - **suggestedCassQueries**: Searches for deeper investigation
 
-## What You DON'T Need To Do
+## What You Should Expect
 
-- Run \`${cli} reflect\` (automation handles this)
-- Run \`${cli} mark\` for feedback (use inline comments instead)
+- **Degraded mode is normal**: If \`cass\` is missing, not indexed, or times out, context still works but history may be disabled. Run \`${cli} doctor\` and follow recommended actions.
+- **Privacy by default**: Cross-agent enrichment is **opt-in and off by default**. Check with \`${cli} privacy status\`.
+
+## What You Usually DON'T Need To Do
+
+- Run \`${cli} reflect\` manually in a well-configured setup. An operator typically schedules it (cron/hook). If learning is stale, ask an operator to run \`${cli} reflect --days 7 --json\` regularly.
+- Run \`${cli} mark\` for feedback (prefer inline comments instead)
 - Manually add rules to the playbook
 - Worry about the learning pipeline
 
-The system learns from your sessions automatically.
+The system can learn from sessions automatically **once** reflection is scheduled.
 
 ## Inline Feedback (Optional)
 
@@ -53,7 +58,9 @@ These are parsed automatically during reflection.
 1. **START**: \`${cli} context "<task>" --json\` before non-trivial work
 2. **WORK**: Reference rule IDs when following them
 3. **FEEDBACK**: Leave inline comments when rules help/hurt
-4. **END**: Just finish. Learning happens automatically.
+4. **END**: Just finish. Learning happens automatically once reflection is scheduled.
+
+> **Operator note (humans):** Schedule \`${cli} reflect --days 7 --json\` (cron/hook). Use \`${cli} doctor\` when agents report missing history or degraded mode.
 
 ## Examples
 
@@ -83,6 +90,10 @@ function getQuickstartJson(cli: string) {
   return {
     summary: "Procedural memory system for AI coding agents",
     oneCommand: `${cli} context "<task>" --json`,
+    expectations: {
+      degradedMode: `If cass is missing/not indexed, historySnippets may be empty; run ${cli} doctor for next steps.`,
+      privacy: `Cross-agent enrichment is opt-in and off by default; check ${cli} privacy status.`
+    },
     whatItReturns: [
       "relevantBullets: Rules that may help",
       "antiPatterns: Pitfalls to avoid",
@@ -90,11 +101,15 @@ function getQuickstartJson(cli: string) {
       "suggestedCassQueries: Deeper searches"
     ],
     doNotDo: [
-      `Run ${cli} reflect (automated)`,
+      `Run ${cli} reflect manually (operators typically schedule it)`,
       `Run ${cli} mark (use inline comments)`,
       "Manually add rules",
       "Worry about learning pipeline"
     ],
+    operatorNote: {
+      automation: `Schedule ${cli} reflect --days 7 --json (cron/hook).`,
+      health: `Use ${cli} doctor when agents report missing history or degraded mode.`
+    },
     inlineFeedbackFormat: {
       helpful: "// [cass: helpful <id>] - reason",
       harmful: "// [cass: harmful <id>] - reason"
@@ -103,7 +118,7 @@ function getQuickstartJson(cli: string) {
       start: `${cli} context "<task>" --json`,
       work: "Reference rule IDs when following them",
       feedback: "Leave inline comments when rules help/hurt",
-      end: "Just finish. Learning is automatic."
+      end: "Just finish. Learning happens automatically once reflection is scheduled."
     },
     examples: [
       `${cli} context "implement JWT authentication" --json`,

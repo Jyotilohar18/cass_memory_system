@@ -8,9 +8,10 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { contextCommand, generateContextResult, ContextFlags } from "../src/commands/context.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
+import { contextCommand, generateContextResult, ContextFlags, scoreBulletsEnhanced } from "../src/commands/context.js";
+import { withTempCassHome, TestEnv, makeCassStub } from "./helpers/temp.js";
 import { createTestLogger } from "./helpers/logger.js";
+import { createTestConfig } from "./helpers/factories.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -88,6 +89,76 @@ function createTestBullet(overrides: Partial<{
 }
 
 describe("E2E: CLI context command", () => {
+  describe("Enhanced Scoring (unit)", () => {
+    it("can prioritize semantic matches when enabled (deterministic embeddings)", async () => {
+      const config = createTestConfig({
+        semanticSearchEnabled: true,
+        semanticWeight: 0.6,
+        embeddingModel: "Xenova/all-MiniLM-L6-v2",
+      });
+
+      const keywordBullet: any = createTestBullet({
+        id: "b-keyword",
+        content: "auth token handling",
+        tags: ["auth"],
+        effectiveScore: 1,
+      });
+      keywordBullet.embedding = [0, 1];
+
+      const semanticBullet: any = createTestBullet({
+        id: "b-semantic",
+        content: "login session management",
+        tags: [],
+        effectiveScore: 1,
+      });
+      semanticBullet.embedding = [1, 0];
+
+      const scored = await scoreBulletsEnhanced(
+        [keywordBullet, semanticBullet],
+        "fix auth bug",
+        ["auth"],
+        config,
+        { queryEmbedding: [1, 0], skipEmbeddingLoad: true }
+      );
+
+      expect(scored[0].id).toBe("b-semantic");
+    });
+
+    it("falls back to keyword-only when semanticWeight is 0", async () => {
+      const config = createTestConfig({
+        semanticSearchEnabled: true,
+        semanticWeight: 0,
+        embeddingModel: "Xenova/all-MiniLM-L6-v2",
+      });
+
+      const keywordBullet: any = createTestBullet({
+        id: "b-keyword",
+        content: "auth token handling",
+        tags: ["auth"],
+        effectiveScore: 1,
+      });
+      keywordBullet.embedding = [0, 1];
+
+      const semanticBullet: any = createTestBullet({
+        id: "b-semantic",
+        content: "login session management",
+        tags: [],
+        effectiveScore: 1,
+      });
+      semanticBullet.embedding = [1, 0];
+
+      const scored = await scoreBulletsEnhanced(
+        [keywordBullet, semanticBullet],
+        "fix auth bug",
+        ["auth"],
+        config,
+        { queryEmbedding: [1, 0], skipEmbeddingLoad: true }
+      );
+
+      expect(scored[0].id).toBe("b-keyword");
+    });
+  });
+
   describe("Basic Context Generation", () => {
     it("generates empty context when no playbook rules exist", async () => {
       await withTempCassHome(async (env) => {
@@ -385,6 +456,36 @@ describe("E2E: CLI context command", () => {
         } finally {
           delete process.env.CASS_PATH;
         }
+      });
+    });
+
+    it("includes structured degraded summary when cass index is missing (deterministic stub)", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([
+          createTestBullet({
+            id: "test-rule",
+            content: "Test rule for degraded mode",
+            kind: "workflow_rule",
+            category: "testing",
+            tags: ["test"],
+            effectiveScore: 0.8
+          })
+        ]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const binDir = path.join(env.home, "bin");
+        await mkdir(binDir, { recursive: true });
+        const cassStubPath = await makeCassStub(binDir, { exitCode: 3, search: "[]" });
+
+        await writeFile(env.configPath, JSON.stringify({ cassPath: cassStubPath }, null, 2));
+
+        const { result } = await generateContextResult("test task", {});
+
+        expect(result.historySnippets).toEqual([]);
+        expect(result.degraded?.cass).toBeDefined();
+        expect(result.degraded?.cass?.available).toBe(false);
+        expect(result.degraded?.cass?.reason).toBe("INDEX_MISSING");
+        expect(result.suggestedCassQueries).toContain("cass index");
       });
     });
 

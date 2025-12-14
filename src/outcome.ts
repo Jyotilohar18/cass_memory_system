@@ -162,8 +162,11 @@ export async function recordOutcome(
   };
 
   await ensureDir(path.dirname(targetPath));
-  // Append is atomic for small writes on POSIX
-  await fs.appendFile(targetPath, JSON.stringify(record) + "\n", "utf-8");
+  
+  // Use withLock for consistent concurrent access safety
+  await withLock(targetPath, async () => {
+    await fs.appendFile(targetPath, JSON.stringify(record) + "\n", "utf-8");
+  });
 
   return record;
 }

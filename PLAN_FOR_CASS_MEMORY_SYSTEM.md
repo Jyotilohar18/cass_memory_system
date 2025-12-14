@@ -5555,14 +5555,14 @@ bullets:
 - Docs show the 5-command surface, install/build steps, degraded-mode expectations, and MCP quickstart.
 
 ### V1 checklist
-- [ ] MCP tools live and documented: `cm_context`, `cm_feedback`, `cm_outcome`.
-- [ ] Budget config surfaced (daily/monthly caps, default local-only).
-- [ ] Context: argv+stdin parsing, JSON/human output, degraded-mode warnings.
-- [ ] Reflect: session discovery, diary → reflect → validate → curate flow; dry-run + JSON.
-- [ ] Playbook ops: list/add/remove; deprecated patterns respected; toxic blocklists applied.
-- [ ] Graceful degradation verified (no cass, no playbook, no LLM, offline).
-- [ ] Binaries: bun --compile targets (linux-x64, darwin-arm64, windows-x64) with `--help`/`--version`.
-- [ ] Dev loop docs: bun --watch, typecheck/watch, test/watch.
+- [x] MCP tools live and documented: `cm_context`, `cm_feedback`, `cm_outcome`.
+- [x] Budget config surfaced (daily/monthly caps, default local-only).
+- [x] Context: argv+stdin parsing, JSON/human output, degraded-mode warnings.
+- [x] Reflect: session discovery, diary → reflect → validate → curate flow; dry-run + JSON.
+- [x] Playbook ops: list/add/remove; deprecated patterns respected; toxic blocklists applied.
+- [x] Graceful degradation verified (no cass, no playbook, no LLM, offline).
+- [x] Binaries: bun --compile targets (linux-x64, darwin-arm64, windows-x64) with `--help`/`--version`.
+- [x] Dev loop docs: bun --watch, typecheck/watch, test/watch.
 
 ### Nice-to-have (push to V2+)
 - Semantic search/embeddings; cross-agent sharing.
@@ -5577,6 +5577,7 @@ bullets:
 5) **Docs**: single path to “run context in <5 minutes,” including MCP snippet.
 
 ### Tracking (beads mapping)
+(All items below were completed and closed as of **2025-12-14**.)
 - MCP surface: cass_memory_system-8nsd
 - Context CLI polish (stdin/argv, degraded messaging): cass_memory_system-dpuu, cass_memory_system-qt2q
 - Budget/cost controls: cass_memory_system-zex2
@@ -5586,14 +5587,14 @@ bullets:
 - Dev workflow docs: cass_memory_system-4hey
 - Scope governance (this bead): cass_memory_system-4fj7
 
-### Quick status snapshot (rolling)
-- Agent surface: NOT STARTED (8nsd open)
-- Context polish: IN PROGRESS (dpuu blocked on reservations; qt2q in progress by GreenDog)
-- Budget/cost: PARTIAL (config defaults added; enforcement/UI TBD)
-- Degradation: DONE per c8w5
-- Command surface: DONE per nf0v
-- Binaries: TODO (iqat open)
-- Dev docs: TODO (4hey open)
+### Quick status snapshot (as of 2025-12-14)
+- Agent surface: DONE (8nsd closed)
+- Context polish: DONE (dpuu + qt2q closed)
+- Budget/cost: DONE (zex2 closed)
+- Degradation: DONE (c8w5 closed)
+- Command surface: DONE (nf0v closed)
+- Binaries: DONE (iqat closed)
+- Dev docs: DONE (4hey closed)
 
 ---
 

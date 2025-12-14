@@ -1,13 +1,15 @@
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName } from "../utils.js";
+import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJson, atomicWrite } from "../utils.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
 import chalk from "chalk";
 import yaml from "yaml";
 import readline from "node:readline";
+import fs from "node:fs/promises";
+import { iconPrefix, formatKv } from "../output.js";
 
-type InitOptions = { force?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
+type InitOptions = { force?: boolean; yes?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
 
 async function promptYesNo(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
@@ -41,17 +43,60 @@ export async function initCommand(options: InitOptions) {
   const playbook = createEmptyPlaybook();
   
   const alreadyInitialized = await fileExists(configPath);
+  const backups: Array<{ file: string; backup: string }> = [];
+  const overwritten: string[] = [];
 
   if (alreadyInitialized && !options.force && !options.starter) {
     if (options.json) {
-      console.log(JSON.stringify({
+      printJson({
         success: false,
         error: "Already initialized. Use --force to reinitialize."
-      }));
+      });
     } else {
       log(chalk.yellow("Already initialized. Use --force to reinitialize."), true);
     }
     return;
+  }
+
+  const needsForceConfirmation = alreadyInitialized && Boolean(options.force);
+  if (needsForceConfirmation) {
+    const canPrompt = Boolean(
+      options.interactive !== false &&
+      !options.json &&
+      process.stdin.isTTY &&
+      process.stdout.isTTY
+    );
+
+    if (canPrompt) {
+      const ok = await promptYesNo(
+        `This will back up and overwrite ~/.cass-memory/config.json and playbook.yaml. Continue? [y/N]: `
+      );
+      if (!ok) {
+        console.log(chalk.yellow("Cancelled."));
+        return;
+      }
+    } else if (!options.yes) {
+      if (options.json) {
+        printJson({
+          success: false,
+          error: "Refusing to overwrite existing files without --yes"
+        });
+      } else {
+        console.error(chalk.red("Refusing to overwrite existing files without --yes"));
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const ts = Date.now();
+    const toBackup = [configPath, playbookPath];
+    for (const file of toBackup) {
+      if (await fileExists(file)) {
+        const backupPath = `${file}.backup.${ts}`;
+        await fs.copyFile(file, backupPath);
+        backups.push({ file, backup: backupPath });
+      }
+    }
   }
 
   // Privacy-first: cross-agent enrichment requires explicit consent.
@@ -85,11 +130,18 @@ export async function initCommand(options: InitOptions) {
     }
   }
 
+  const defaultConfigStr = JSON.stringify(config, null, 2);
+  const defaultPlaybookStr = yaml.stringify(playbook);
+
   // Create structure
-  const result = await ensureGlobalStructure(
-    JSON.stringify(config, null, 2),
-    yaml.stringify(playbook)
-  );
+  const result = await ensureGlobalStructure(defaultConfigStr, defaultPlaybookStr);
+
+  if (needsForceConfirmation) {
+    await atomicWrite(configPath, defaultConfigStr);
+    overwritten.push("config.json");
+    await atomicWrite(playbookPath, defaultPlaybookStr);
+    overwritten.push("playbook.yaml");
+  }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
   if (options.starter) {
@@ -97,10 +149,10 @@ export async function initCommand(options: InitOptions) {
       starterOutcome = await seedStarter(playbookPath, options.starter);
     } catch (err: any) {
       if (options.json) {
-        console.log(JSON.stringify({
+        printJson({
           success: false,
           error: err?.message || "Failed to apply starter"
-        }));
+        });
       } else {
         console.error(chalk.red(err?.message || "Failed to apply starter"));
       }
@@ -117,14 +169,16 @@ export async function initCommand(options: InitOptions) {
 
   // Output
   if (options.json) {
-    console.log(JSON.stringify({
+    printJson({
       success: true,
       configPath,
       created: result.created,
       existed: result.existed,
+      overwritten,
+      backups,
       cassAvailable: cassOk,
       starter: starterOutcome
-    }, null, 2));
+    });
   } else {
     if (result.created.length > 0) {
       for (const file of result.created) {
@@ -136,22 +190,56 @@ export async function initCommand(options: InitOptions) {
         console.log(chalk.blue(`• ~/.cass-memory/${file} already exists`));
       }
     }
-    
-    // Ensure subdirectories are mentioned if created (implied by ensureGlobalStructure success)
-    const diaryDir = expandPath("~/.cass-memory/diary");
-    console.log(chalk.green(`✓ Verified directories: ${diaryDir} etc.`));
 
-    console.log(`✓ cass available: ${cassOk ? chalk.green("yes") : chalk.red("no")}`);
-    if (starterOutcome) {
-      console.log(chalk.green(`✓ Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`));
+    if (backups.length > 0) {
+      console.log(chalk.yellow("\nBackups created:"));
+      for (const b of backups) {
+        console.log(chalk.yellow(`  • ${b.backup}`));
+      }
     }
+
+    if (overwritten.length > 0) {
+      console.log(chalk.yellow(`\nOverwritten: ${overwritten.join(", ")}`));
+    }
+    
+    const cassStatus = cassOk
+      ? "available"
+      : "not found (history disabled until installed/indexed)";
+
+    if (starterOutcome) {
+      console.log(
+        chalk.green(
+          `✓ Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`
+        )
+      );
+    }
+
     console.log("");
-    console.log(chalk.bold(`${cli} initialized successfully!`));
+    console.log(chalk.bold(`${cli} initialized successfully.`));
     console.log("");
-    console.log("Next steps:");
-    console.log(chalk.cyan(`  ${cli} context "your task" --json  # Get context for a task`));
-    console.log(chalk.cyan(`  ${cli} doctor                     # Check system health`));
-    console.log(chalk.cyan(`  ${cli} init --repo                # Initialize repo-level .cass/`));
+
+    console.log(chalk.bold("Created/verified:"));
+    console.log(
+      formatKv(
+        [
+          { key: "Config", value: "~/.cass-memory/config.json" },
+          { key: "Playbook", value: "~/.cass-memory/playbook.yaml" },
+          { key: "Diary", value: "~/.cass-memory/diary/" },
+          { key: "cass", value: cassStatus },
+        ],
+        { indent: "  " }
+      )
+    );
+
+    console.log("");
+    console.log(chalk.bold("Next steps (copy/paste):"));
+    console.log(chalk.cyan(`  ${cli} context "your task" --json`));
+    console.log(chalk.cyan(`  ${cli} doctor --json`));
+    console.log(chalk.cyan(`  ${cli} privacy status`));
+
+    console.log(chalk.gray(`\nAutomation (operator): schedule ${cli} reflect --days 7 --json`));
+    console.log(chalk.gray(`Project rules (repo): ${cli} init --repo`));
+    console.log(chalk.gray("Semantic search: enabling it may download an embedding model on first use."));
   }
 }
 
@@ -177,13 +265,15 @@ async function seedStarter(
  */
 async function initRepoCommand(options: InitOptions) {
   const cassDir = await resolveRepoDir();
+  const backups: Array<{ file: string; backup: string }> = [];
+  const overwritten: string[] = [];
 
   if (!cassDir) {
     if (options.json) {
-      console.log(JSON.stringify({
+      printJson({
         success: false,
         error: "Not in a git repository. Run from within a git repo."
-      }));
+      });
     } else {
       console.error(chalk.red("Error: Not in a git repository."));
       console.error("Run this command from within a git repository.");
@@ -193,22 +283,73 @@ async function initRepoCommand(options: InitOptions) {
 
   // Check if already initialized
   const playbookPath = `${cassDir}/playbook.yaml`;
-  const alreadyInitialized = await fileExists(playbookPath);
+  const blockedPath = `${cassDir}/blocked.log`;
+  const alreadyInitialized = (await fileExists(playbookPath)) || (await fileExists(blockedPath));
 
   if (alreadyInitialized && !options.force && !options.starter) {
     if (options.json) {
-      console.log(JSON.stringify({
+      printJson({
         success: false,
         error: "Repo already has .cass/ directory. Use --force to reinitialize."
-      }));
+      });
     } else {
       console.log(chalk.yellow("Repo already has .cass/ directory. Use --force to reinitialize."));
     }
     return;
   }
 
+  const needsForceConfirmation = alreadyInitialized && Boolean(options.force);
+  if (needsForceConfirmation) {
+    const canPrompt = Boolean(
+      options.interactive !== false &&
+      !options.json &&
+      process.stdin.isTTY &&
+      process.stdout.isTTY
+    );
+
+    if (canPrompt) {
+      const ok = await promptYesNo(
+        `This will back up and overwrite ${cassDir}/playbook.yaml and blocked.log. Continue? [y/N]: `
+      );
+      if (!ok) {
+        console.log(chalk.yellow("Cancelled."));
+        return;
+      }
+    } else if (!options.yes) {
+      if (options.json) {
+        printJson({
+          success: false,
+          error: "Refusing to overwrite existing files without --yes"
+        });
+      } else {
+        console.error(chalk.red("Refusing to overwrite existing files without --yes"));
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const ts = Date.now();
+    const toBackup = [playbookPath, blockedPath];
+    for (const file of toBackup) {
+      if (await fileExists(file)) {
+        const backupPath = `${file}.backup.${ts}`;
+        await fs.copyFile(file, backupPath);
+        backups.push({ file, backup: backupPath });
+      }
+    }
+  }
+
   // Create the structure
   const result = await ensureRepoStructure(cassDir);
+
+  if (needsForceConfirmation) {
+    const repoPlaybook = createEmptyPlaybook("repo-playbook");
+    repoPlaybook.description = "Project-specific rules for this repository";
+    await atomicWrite(playbookPath, yaml.stringify(repoPlaybook));
+    overwritten.push("playbook.yaml");
+    await atomicWrite(blockedPath, "");
+    overwritten.push("blocked.log");
+  }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
   if (options.starter) {
@@ -216,10 +357,10 @@ async function initRepoCommand(options: InitOptions) {
       starterOutcome = await seedStarter(playbookPath, options.starter);
     } catch (err: any) {
       if (options.json) {
-        console.log(JSON.stringify({
+        printJson({
           success: false,
           error: err?.message || "Failed to apply starter"
-        }));
+        });
       } else {
         console.error(chalk.red(err?.message || "Failed to apply starter"));
       }
@@ -228,15 +369,17 @@ async function initRepoCommand(options: InitOptions) {
   }
 
   if (options.json) {
-    console.log(JSON.stringify({
+    printJson({
       success: true,
       cassDir,
       created: result.created,
       existed: result.existed,
+      overwritten,
+      backups,
       starter: starterOutcome
-    }, null, 2));
+    });
   } else {
-    console.log(chalk.bold("\n🏗️  Initializing repo-level .cass/ structure\n"));
+    console.log(chalk.bold(`\n${iconPrefix("construction")}Initializing repo-level .cass/ structure\n`));
 
     if (result.created.length > 0) {
       for (const file of result.created) {
@@ -248,6 +391,17 @@ async function initRepoCommand(options: InitOptions) {
       for (const file of result.existed) {
         console.log(chalk.blue(`• .cass/${file} already exists`));
       }
+    }
+
+    if (backups.length > 0) {
+      console.log(chalk.yellow("\nBackups created:"));
+      for (const b of backups) {
+        console.log(chalk.yellow(`  • ${b.backup}`));
+      }
+    }
+
+    if (overwritten.length > 0) {
+      console.log(chalk.yellow(`\nOverwritten: ${overwritten.join(", ")}`));
     }
 
     if (starterOutcome) {

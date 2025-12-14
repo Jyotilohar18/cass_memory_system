@@ -65,6 +65,11 @@ describe("E2E CLI Smoke Test", () => {
     // Should succeed or warn about existing
     expect(result.exitCode).toBeLessThanOrEqual(1);
 
+    // Stdout must always be parseable JSON in --json mode
+    const payload = JSON.parse(result.stdout);
+    expect(typeof payload).toBe("object");
+    expect(typeof payload.success).toBe("boolean");
+
     // Check files created
     const cassMemoryDir = join(testDir, ".cass-memory");
     expect(existsSync(cassMemoryDir) || result.stdout.includes("initialized")).toBe(true);
@@ -106,11 +111,9 @@ describe("E2E CLI Smoke Test", () => {
     // May succeed with empty results or warn about missing cass
     expect(result.exitCode).toBeLessThanOrEqual(1);
 
-    if (result.exitCode === 0) {
-      const context = JSON.parse(result.stdout);
-      expect(context.task).toBe("test task for smoke testing");
-      expect(Array.isArray(context.relevantBullets)).toBe(true);
-    }
+    const context = JSON.parse(result.stdout);
+    expect(context.task).toBe("test task for smoke testing");
+    expect(Array.isArray(context.relevantBullets)).toBe(true);
   });
 
   test("cm stats returns playbook statistics", () => {
@@ -131,6 +134,8 @@ describe("E2E CLI Smoke Test", () => {
 
     const health = JSON.parse(result.stdout);
     expect(Array.isArray(health.checks)).toBe(true);
+    expect(typeof health.overallStatus).toBe("string");
+    expect(Array.isArray(health.recommendedActions)).toBe(true);
   });
 
   test("cm top shows effective bullets", () => {
@@ -173,6 +178,34 @@ describe("E2E CLI Smoke Test", () => {
     expect(typeof usage.dailyLimit).toBe("number");
   });
 
+  test("cm project --output refuses to overwrite without --force", () => {
+    // Ensure baseline init exists (idempotent)
+    runCm(["init", "--json"], testDir);
+
+    const outPath = join(testDir, "project-export.md");
+    const first = runCm(["project", "--output", outPath], testDir);
+    expect(first.exitCode).toBe(0);
+    expect(existsSync(outPath)).toBe(true);
+
+    const second = runCm(["project", "--output", outPath], testDir);
+    expect(second.exitCode).toBe(1);
+    expect(second.stderr).toContain("--force");
+
+    const third = runCm(["project", "--output", outPath, "--force"], testDir);
+    expect(third.exitCode).toBe(0);
+  });
+
+  test("cm similar returns parseable JSON (and errors are JSON too)", () => {
+    const ok = runCm(["similar", "smoke test query", "--json"], testDir);
+    expect(ok.exitCode).toBe(0);
+    expect(() => JSON.parse(ok.stdout)).not.toThrow();
+
+    const bad = runCm(["similar", "smoke test query", "--threshold", "2", "--json"], testDir);
+    expect(bad.exitCode).toBe(1);
+    const err = JSON.parse(bad.stdout);
+    expect(typeof err.error).toBe("string");
+  });
+
   test("cm undo handles non-existent bullet gracefully", () => {
     const result = runCm(["undo", "b-nonexistent", "--json"], testDir);
 
@@ -201,6 +234,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(1);
 
     const response = JSON.parse(result.stdout);
-    expect(response.error).toContain("No feedback events to undo");
+    // Updated to match structured error format from CLI handler
+    const errorMessage = response.error.message || response.error;
+    expect(errorMessage).toContain("No feedback events to undo");
   });
 });

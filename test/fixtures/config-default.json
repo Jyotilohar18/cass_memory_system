@@ -23,6 +23,7 @@
     "auditLog": true
   },
   "semanticSearchEnabled": false,
+  "semanticWeight": 0.6,
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "verbose": false,
   "jsonOutput": false,

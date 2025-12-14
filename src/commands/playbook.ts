@@ -9,6 +9,7 @@ import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
+import { iconPrefix } from "../output.js";
 
 // Helper function to format a bullet for detailed display
 function formatBulletDetails(bullet: PlaybookBullet, effectiveScore: number, decayedCounts: { decayedHelpful: number; decayedHarmful: number }): string {
@@ -77,7 +78,7 @@ function formatBulletDetails(bullet: PlaybookBullet, effectiveScore: number, dec
 
   if (bullet.pinned) {
     lines.push("");
-    lines.push(chalk.blue.bold("📌 PINNED"));
+    lines.push(chalk.blue.bold(`${iconPrefix("pin")}PINNED`));
   }
 
   return lines.join("\n");

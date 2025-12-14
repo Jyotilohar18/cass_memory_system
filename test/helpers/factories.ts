@@ -46,6 +46,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       auditLog: true
     },
     semanticSearchEnabled: false,
+    semanticWeight: 0.6,
     embeddingModel: "Xenova/all-MiniLM-L6-v2",
     verbose: false,
     jsonOutput: false,
@@ -114,9 +115,37 @@ export function createTestBullet(overrides: Partial<PlaybookBullet> = {}): Playb
     deprecated: false,
     pinned: false,
     confidenceDecayHalfLifeDays: 90,
-    ...overrides
+    ...overrides,
+    source: overrides.source ?? "learned"
   };
 }
+
+export const createBullet = (overrides: Partial<PlaybookBullet> = {}): PlaybookBullet => {
+  return {
+    id: "b-test-" + Math.random().toString(36).slice(2, 8),
+    content: "Test bullet content",
+    category: "general",
+    kind: "workflow_rule",
+    type: "rule",
+    isNegative: false,
+    scope: "global",
+    state: "active",
+    maturity: "candidate",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    helpfulCount: 0,
+    harmfulCount: 0,
+    feedbackEvents: [],
+    confidenceDecayHalfLifeDays: 90,
+    deprecated: false,
+    pinned: false,
+    tags: [],
+    sourceSessions: [],
+    sourceAgents: [],
+    ...overrides,
+    source: overrides.source ?? "learned"
+  };
+};
 
 export function createTestDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   const sessionPath = overrides.sessionPath || "/tmp/session.jsonl";

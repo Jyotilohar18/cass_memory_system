@@ -28,6 +28,7 @@ import {
 } from "./utils.js";
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
+import { formatMaturityIcon } from "./output.js";
 
 // --- Interfaces ---
 
@@ -88,8 +89,14 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
   }
 }
 
-export async function savePlaybook(playbook: Playbook, filePath: string): Promise<void> {
-  playbook.metadata.lastReflection = now();
+export async function savePlaybook(
+  playbook: Playbook, 
+  filePath: string, 
+  options: { updateLastReflection?: boolean } = {}
+): Promise<void> {
+  if (options.updateLastReflection) {
+    playbook.metadata.lastReflection = now();
+  }
   const yamlStr = yaml.stringify(playbook);
   await atomicWrite(filePath, yamlStr);
 }
@@ -323,7 +330,19 @@ export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playboo
   }
   
   merged.bullets = Array.from(bulletMap.values());
-  merged.deprecatedPatterns = [...global.deprecatedPatterns, ...repo.deprecatedPatterns];
+  
+  // Deduplicate deprecated patterns
+  const seenPatterns = new Set<string>();
+  const uniqueDeprecatedPatterns: Array<z.infer<typeof import("./types.js").DeprecatedPatternSchema>> = [];
+  
+  for (const p of [...global.deprecatedPatterns, ...repo.deprecatedPatterns]) {
+    if (!seenPatterns.has(p.pattern)) {
+      seenPatterns.add(p.pattern);
+      uniqueDeprecatedPatterns.push(p);
+    }
+  }
+  
+  merged.deprecatedPatterns = uniqueDeprecatedPatterns;
   
   return merged;
 }
@@ -516,15 +535,6 @@ export function exportToAgentsMd(
     categories[b.category].push(b);
   }
 
-  const maturityIcon = (m: string) => {
-    switch (m) {
-      case "proven": return "✅";
-      case "established": return "🔵";
-      case "candidate": return "🟡";
-      default: return "⚪";
-    }
-  };
-
   let md = `# AGENTS.md\n\n`;
   md += `> Auto-generated playbook for AI coding assistants.\n`;
   md += `> Last updated: ${new Date().toISOString().split("T")[0]}\n\n`;
@@ -542,10 +552,11 @@ export function exportToAgentsMd(
     md += `### ${cat}\n\n`;
     const slice = options.topN ? bullets.slice(0, options.topN) : bullets;
     for (const b of slice) {
-      const icon = maturityIcon(b.maturity);
+      const icon = formatMaturityIcon(b.maturity);
+      const iconPrefix = icon ? `${icon} ` : "";
       const score = getEffectiveScore(b, config).toFixed(1);
       const counts = options.showCounts ? ` [${b.helpfulCount ?? 0}+/${b.harmfulCount ?? 0}-]` : "";
-      md += `- ${icon} ${b.content}${counts} _(score: ${score})_\n`;
+      md += `- ${iconPrefix}${b.content}${counts} _(score: ${score})_\n`;
     }
     md += "\n";
   }

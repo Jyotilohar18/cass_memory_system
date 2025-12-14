@@ -67,6 +67,37 @@ async function tryRemoveStaleLock(lockPath: string, thresholdMs = STALE_LOCK_THR
   return false;
 }
 
+function pidIsRunning(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    // EPERM means the PID exists but we don't have permission to signal it.
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
+}
+
+/**
+ * Try to clean up an abandoned lock dir using its pid file.
+ * This is important when a process exits abruptly (e.g. process.exit inside a locked operation),
+ * leaving a fresh-but-orphaned lock that would otherwise block for the stale threshold duration.
+ */
+async function tryRemoveAbandonedLock(lockPath: string): Promise<boolean> {
+  try {
+    const pidRaw = await fs.readFile(`${lockPath}/pid`, "utf-8");
+    const pid = Number.parseInt(pidRaw.trim(), 10);
+    if (pidIsRunning(pid)) return false;
+
+    await fs.rm(lockPath, { recursive: true, force: true });
+    console.warn(`[lock] Removed abandoned lock (dead PID ${pid}): ${lockPath}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Robust file lock mechanism using atomic mkdir.
  * Uses a .lock directory next to the target file.
@@ -113,14 +144,43 @@ export async function withLock<T>(
         return await operation();
       } finally {
         clearInterval(heartbeat);
+        
         // Remove from tracking before releasing
         activeLocks.delete(lockPath);
+        
+        // Safety check: Verify we still own the lock before deleting
+        // This prevents deleting a lock that was stolen by another process (due to staleness)
+        let safeToDelete = true;
         try {
-          await fs.rm(lockPath, { recursive: true, force: true });
-        } catch {}
+          const content = await fs.readFile(`${lockPath}/pid`, "utf-8");
+          if (content.trim() !== pid) {
+            safeToDelete = false;
+            console.warn(`[lock] Lock stolen by PID ${content.trim()}, not deleting: ${lockPath}`);
+          }
+        } catch {
+          // If we can't read the PID file, it might be gone or corrupted.
+          // Proceed with delete attempt if we created it, or maybe skip?
+          // If we can't read it, and we are the owner, it shouldn't have been deleted.
+          // If it was stolen and deleted/recreated, reading might fail or succeed.
+          // For safety, if we can't verify ownership, we should be cautious.
+          // But 'mkdir' succeeded, so we *did* own it at start.
+          // If we can't read PID, maybe we should still delete if mtime suggests it's ours?
+          // Let's assume strict PID match required if file exists.
+          // If file missing but dir exists? 
+          // Default to deleting if we can't prove it's NOT ours, relying on the fact we created it.
+        }
+
+        if (safeToDelete) {
+          try {
+            await fs.rm(lockPath, { recursive: true, force: true });
+          } catch {}
+        }
       }
     } catch (err: any) {
       if (err.code === "EEXIST") {
+        if (await tryRemoveAbandonedLock(lockPath)) {
+          continue;
+        }
         if (await tryRemoveStaleLock(lockPath, staleThreshold)) {
           continue;
         }

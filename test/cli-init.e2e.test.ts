@@ -146,7 +146,7 @@ describe("E2E: CLI init command", () => {
       });
     });
 
-    it.serial("init with --force bypasses already initialized check", async () => {
+    it.serial("init with --force reinitializes with backups", async () => {
       await withTempCassHome(async (env) => {
         await rm(env.cassMemoryDir, { recursive: true, force: true });
 
@@ -158,24 +158,47 @@ describe("E2E: CLI init command", () => {
           capture1.restore();
         }
 
-        // Note: --force doesn't overwrite existing files, it just
-        // bypasses the "already initialized" check and ensures structure exists.
-        // This is by design - ensureGlobalStructure doesn't overwrite.
+        // Modify config + playbook so we can prove --force overwrote them
+        const originalConfig = await readFile(env.configPath, "utf-8");
+        const modifiedConfig = JSON.parse(originalConfig);
+        modifiedConfig._test_marker = "should_be_backed_up";
+        await writeFile(env.configPath, JSON.stringify(modifiedConfig, null, 2));
 
-        // Reinit with --force and --json to capture result
+        const originalPlaybook = await readFile(env.playbookPath, "utf-8");
+        const modifiedPlaybook = yaml.parse(originalPlaybook);
+        modifiedPlaybook._test_marker = "should_be_backed_up";
+        await writeFile(env.playbookPath, yaml.stringify(modifiedPlaybook));
+
+        // Reinit with --force + --yes and --json to capture result
         const capture2 = captureConsole();
         try {
-          await initCommand({ force: true, json: true });
+          await initCommand({ force: true, yes: true, json: true });
         } finally {
           capture2.restore();
         }
 
-        // With --force, should succeed (not fail with "already initialized")
         const output = capture2.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(true);
-        // Existing files will be reported in "existed" array
-        expect(Array.isArray(result.existed)).toBe(true);
+        expect(result.overwritten).toEqual(expect.arrayContaining(["config.json", "playbook.yaml"]));
+        expect(Array.isArray(result.backups)).toBe(true);
+
+        const configBackup = result.backups.find((b: any) => String(b.file).endsWith("config.json"))?.backup;
+        expect(typeof configBackup).toBe("string");
+        expect(await exists(configBackup)).toBe(true);
+        expect(await readFile(configBackup, "utf-8")).toContain("should_be_backed_up");
+
+        const playbookBackup = result.backups.find((b: any) => String(b.file).endsWith("playbook.yaml"))?.backup;
+        expect(typeof playbookBackup).toBe("string");
+        expect(await exists(playbookBackup)).toBe(true);
+        expect(await readFile(playbookBackup, "utf-8")).toContain("should_be_backed_up");
+
+        // Current files should be reset (marker removed)
+        const currentConfig = JSON.parse(await readFile(env.configPath, "utf-8"));
+        expect(currentConfig._test_marker).toBeUndefined();
+
+        const currentPlaybook = yaml.parse(await readFile(env.playbookPath, "utf-8"));
+        expect(currentPlaybook._test_marker).toBeUndefined();
       });
     });
 
@@ -326,7 +349,7 @@ describe("E2E: CLI init command", () => {
       });
     }, 30000);
 
-    it.serial("repo init with --force bypasses already initialized check", async () => {
+    it.serial("repo init with --force reinitializes with backups", async () => {
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -340,23 +363,47 @@ describe("E2E: CLI init command", () => {
             capture1.restore();
           }
 
-          // Note: --force doesn't overwrite existing files, it just
-          // bypasses the "already has .cass" check and ensures structure exists.
+          // Modify repo playbook + blocked.log so we can prove --force overwrote them
+          const cassDir = path.join(repoDir, ".cass");
+          const playbookPath = path.join(cassDir, "playbook.yaml");
+          const blockedLogPath = path.join(cassDir, "blocked.log");
 
-          // Reinit with --force and --json
+          const originalPlaybook = await readFile(playbookPath, "utf-8");
+          const modifiedPlaybook = yaml.parse(originalPlaybook);
+          modifiedPlaybook._test_marker = "should_be_backed_up";
+          await writeFile(playbookPath, yaml.stringify(modifiedPlaybook));
+
+          await writeFile(blockedLogPath, "should_be_backed_up\n");
+
+          // Reinit with --force + --yes and --json
           const capture2 = captureConsole();
           try {
-            await initCommand({ repo: true, force: true, json: true });
+            await initCommand({ repo: true, force: true, yes: true, json: true });
           } finally {
             capture2.restore();
           }
 
-          // With --force, should succeed (not fail with "already has .cass")
           const output = capture2.logs.join("\n");
           const result = JSON.parse(output);
           expect(result.success).toBe(true);
-          // Existing files will be reported in "existed" array
-          expect(Array.isArray(result.existed)).toBe(true);
+          expect(result.overwritten).toEqual(expect.arrayContaining(["playbook.yaml", "blocked.log"]));
+          expect(Array.isArray(result.backups)).toBe(true);
+
+          const playbookBackup = result.backups.find((b: any) => String(b.file).endsWith("playbook.yaml"))?.backup;
+          expect(typeof playbookBackup).toBe("string");
+          expect(await exists(playbookBackup)).toBe(true);
+          expect(await readFile(playbookBackup, "utf-8")).toContain("should_be_backed_up");
+
+          const blockedBackup = result.backups.find((b: any) => String(b.file).endsWith("blocked.log"))?.backup;
+          expect(typeof blockedBackup).toBe("string");
+          expect(await exists(blockedBackup)).toBe(true);
+          expect(await readFile(blockedBackup, "utf-8")).toContain("should_be_backed_up");
+
+          // Current repo files should be reset (marker removed)
+          const currentPlaybook = yaml.parse(await readFile(playbookPath, "utf-8"));
+          expect(currentPlaybook._test_marker).toBeUndefined();
+
+          expect(await readFile(blockedLogPath, "utf-8")).toBe("");
         } finally {
           process.chdir(originalCwd);
         }

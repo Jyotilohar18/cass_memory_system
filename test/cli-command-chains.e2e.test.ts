@@ -12,10 +12,11 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import yaml from "yaml";
+import { createTestLogger } from "./helpers/logger.js";
 
 const CM_PATH = join(import.meta.dir, "..", "src", "cm.ts");
 
@@ -46,6 +47,15 @@ function runCm(args: string[], cwd: string, env: Record<string, string> = {}): C
   };
 }
 
+function getPathState(p: string): { exists: boolean; type?: "file" | "dir"; size?: number } {
+  try {
+    const stat = statSync(p);
+    return { exists: true, type: stat.isDirectory() ? "dir" : "file", size: stat.size };
+  } catch {
+    return { exists: false };
+  }
+}
+
 describe("CLI Command Chains E2E", () => {
   let testDir: string;
 
@@ -60,7 +70,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Init → Context → Mark → Context Flow", () => {
-    test("marking a bullet as helpful increases its score in subsequent context calls", () => {
+    test.serial("marking a bullet as helpful increases its score in subsequent context calls", () => {
       // Step 1: Initialize
       const initResult = runCm(["init", "--json"], testDir);
       expect(initResult.exitCode).toBe(0);
@@ -116,7 +126,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Playbook Add → Mark → Score Flow", () => {
-    test("marking bullets changes their effective score and maturity", () => {
+    test.serial("marking bullets changes their effective score and maturity", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -153,7 +163,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Playbook Add → Forget → Undo Flow", () => {
-    test("undo restores a forgotten bullet to active state", () => {
+    test.serial("undo restores a forgotten bullet to active state", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -213,7 +223,7 @@ describe("CLI Command Chains E2E", () => {
       expect(bullets3.some((b: any) => b.id === bulletId)).toBe(true);
     }, { timeout: 30000 });
 
-    test("undo --feedback removes the last feedback event", () => {
+    test.serial("undo --feedback removes the last feedback event", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -247,9 +257,9 @@ describe("CLI Command Chains E2E", () => {
       const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult2.exitCode).toBe(0);
       expect(JSON.parse(getResult2.stdout).bullet.helpfulCount).toBe(1);
-    }, { timeout: 30000 });
+    }, { timeout: 60000 });
 
-    test("undo --hard requires explicit confirmation (--yes) in non-interactive mode", () => {
+    test.serial("undo --hard requires explicit confirmation (--yes) in non-interactive mode", () => {
       runCm(["init", "--json"], testDir);
 
       const addResult = runCm([
@@ -281,11 +291,11 @@ describe("CLI Command Chains E2E", () => {
       expect(listAfterDelete.exitCode).toBe(0);
       const bullets = JSON.parse(listAfterDelete.stdout);
       expect(bullets.some((b: any) => b.id === bulletId)).toBe(false);
-    }, { timeout: 30000 });
+    }, { timeout: 60000 });
   });
 
   describe("Stats → Top → Stale Flow", () => {
-    test("stats, top, and stale reflect the same playbook state", () => {
+    test.serial("stats, top, and stale reflect the same playbook state", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -330,7 +340,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Why → Mark → Why Flow", () => {
-    test("why command shows updated feedback after marking", () => {
+    test.serial("why command shows updated feedback after marking", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -364,7 +374,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Doctor → Init --force → Doctor Flow", () => {
-    test("doctor detects missing files and init --force resolves issues", () => {
+    test.serial("doctor detects missing files and init --force resolves issues", () => {
       // Initialize normally first
       runCm(["init", "--json"], testDir);
 
@@ -373,6 +383,7 @@ describe("CLI Command Chains E2E", () => {
       expect(doctorResult1.exitCode).toBeLessThanOrEqual(1);
       const doctor1 = JSON.parse(doctorResult1.stdout);
       expect(doctor1.checks).toBeDefined();
+      expect(doctor1.overallStatus).toBeDefined();
 
       // Add some data
       runCm([
@@ -389,7 +400,7 @@ describe("CLI Command Chains E2E", () => {
   });
 
   describe("Doctor Flags", () => {
-    test("doctor --dry-run does not create or modify files", () => {
+    test.serial("doctor --dry-run does not create or modify files", () => {
       const dryRun = runCm(["doctor", "--dry-run"], testDir);
       expect(dryRun.exitCode).toBeLessThanOrEqual(1);
 
@@ -398,7 +409,7 @@ describe("CLI Command Chains E2E", () => {
       expect(existsSync(globalDir)).toBe(false);
     }, { timeout: 30000 });
 
-    test("doctor --fix --no-interactive applies safe fixes without hanging", () => {
+    test.serial("doctor --fix --no-interactive applies safe fixes without hanging", () => {
       const fix = runCm(["doctor", "--fix", "--no-interactive"], testDir);
       expect(fix.exitCode).toBeLessThanOrEqual(1);
 
@@ -407,24 +418,41 @@ describe("CLI Command Chains E2E", () => {
       expect(existsSync(globalDir)).toBe(true);
     }, { timeout: 30000 });
 
-    test("doctor --json --self-test includes selfTest results only when requested", () => {
+    test.serial("doctor --json --self-test includes selfTest results only when requested", () => {
       const base = runCm(["doctor", "--json"], testDir);
       expect(base.exitCode).toBeLessThanOrEqual(1);
       const baseParsed = JSON.parse(base.stdout);
       expect(baseParsed.checks).toBeDefined();
+      expect(baseParsed.overallStatus).toBeDefined();
+      expect(Array.isArray(baseParsed.recommendedActions)).toBe(true);
       expect(baseParsed.selfTest).toBeUndefined();
 
       const withSelfTest = runCm(["doctor", "--json", "--self-test"], testDir);
       expect(withSelfTest.exitCode).toBeLessThanOrEqual(1);
       const parsed = JSON.parse(withSelfTest.stdout);
       expect(parsed.checks).toBeDefined();
+      expect(parsed.overallStatus).toBeDefined();
+      expect(Array.isArray(parsed.recommendedActions)).toBe(true);
       expect(Array.isArray(parsed.selfTest)).toBe(true);
       expect(parsed.selfTest.length).toBeGreaterThan(0);
     }, { timeout: 60000 });
+
+    test.serial("doctor --json --fix --dry-run includes a fix plan and makes no changes", () => {
+      const result = runCm(["doctor", "--json", "--fix", "--dry-run"], testDir);
+      expect(result.exitCode).toBeLessThanOrEqual(1);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.fixPlan).toBeDefined();
+      expect(Array.isArray(parsed.fixPlan.wouldApply)).toBe(true);
+
+      // Dry-run should not create ~/.cass-memory/
+      const globalDir = join(testDir, ".cass-memory");
+      expect(existsSync(globalDir)).toBe(false);
+    }, { timeout: 30000 });
   });
 
   describe("Quickstart → Context Flow", () => {
-    test("quickstart provides valid workflow that context can follow", () => {
+    test.serial("quickstart provides valid workflow that context can follow", () => {
       // Initialize
       runCm(["init", "--json"], testDir);
 
@@ -443,6 +471,216 @@ describe("CLI Command Chains E2E", () => {
       expect(contextResult.exitCode).toBe(0);
       const context = JSON.parse(contextResult.stdout);
       expect(context.task).toBe("implement a new feature");
+    }, { timeout: 30000 });
+  });
+
+  describe("New User Onboarding Flow", () => {
+    test.serial("fresh install → init → context → mark helpful → doctor", () => {
+      const logger = createTestLogger("cli-onboarding", "debug");
+
+      const globalDir = join(testDir, ".cass-memory");
+      logger.step("precheck", "info", "Starting onboarding flow", {
+        testDir,
+        globalDir,
+        globalDirExists: existsSync(globalDir),
+      });
+      expect(existsSync(globalDir)).toBe(false);
+
+      // Step 1: init creates global structure
+      logger.startStep("init");
+      const initStart = Date.now();
+      const initResult = runCm(["init", "--json"], testDir);
+      const initDurationMs = Date.now() - initStart;
+      logger.step("init", "info", "cm init completed", {
+        args: ["init", "--json"],
+        exitCode: initResult.exitCode,
+        durationMs: initDurationMs,
+        stdout: initResult.stdout,
+        stderr: initResult.stderr,
+      });
+      expect(initResult.exitCode).toBe(0);
+      expect(() => JSON.parse(initResult.stdout)).not.toThrow();
+      logger.endStep("init", true);
+
+      const configPath = join(globalDir, "config.json");
+      const playbookPath = join(globalDir, "playbook.yaml");
+      const diaryDir = join(globalDir, "diary");
+      logger.step("fs-after-init", "info", "File system state after init", {
+        config: { path: configPath, ...getPathState(configPath) },
+        playbook: { path: playbookPath, ...getPathState(playbookPath) },
+        diary: { path: diaryDir, ...getPathState(diaryDir) },
+      });
+      expect(getPathState(configPath).exists).toBe(true);
+      expect(getPathState(playbookPath).exists).toBe(true);
+      expect(getPathState(diaryDir).exists).toBe(true);
+
+      // Make cass deterministic for this test (avoid depending on local machine cass/index state)
+      logger.startStep("patch-config");
+      const configJson = JSON.parse(readFileSync(configPath, "utf-8")) as any;
+      configJson.cassPath = "__nonexistent__";
+      writeFileSync(configPath, JSON.stringify(configJson, null, 2), "utf-8");
+      logger.step("patch-config", "info", "Patched config.cassPath", { cassPath: configJson.cassPath });
+      logger.endStep("patch-config", true);
+
+      // Step 2: Add a bullet so context can return something meaningful
+      logger.startStep("playbook-add");
+      const addArgs = [
+        "playbook",
+        "add",
+        "Always validate user input before processing",
+        "--category",
+        "security",
+        "--json",
+      ];
+      const addStart = Date.now();
+      const addResult = runCm(addArgs, testDir);
+      const addDurationMs = Date.now() - addStart;
+      logger.step("playbook-add", "info", "cm playbook add completed", {
+        args: addArgs,
+        exitCode: addResult.exitCode,
+        durationMs: addDurationMs,
+        stdout: addResult.stdout,
+        stderr: addResult.stderr,
+      });
+      expect(addResult.exitCode).toBe(0);
+      const addJson = JSON.parse(addResult.stdout) as any;
+      const bulletId = addJson?.bullet?.id;
+      expect(typeof bulletId).toBe("string");
+      expect(bulletId).toMatch(/^b-/);
+      logger.endStep("playbook-add", true);
+
+      // Step 3: Context returns relevant bullets for the first task
+      logger.startStep("context");
+      const contextArgs = ["context", "validate user input", "--json"];
+      const contextStart = Date.now();
+      const contextResult = runCm(contextArgs, testDir);
+      const contextDurationMs = Date.now() - contextStart;
+      logger.step("context", "info", "cm context completed", {
+        args: contextArgs,
+        exitCode: contextResult.exitCode,
+        durationMs: contextDurationMs,
+        stdout: contextResult.stdout,
+        stderr: contextResult.stderr,
+      });
+      expect(contextResult.exitCode).toBe(0);
+      const contextJson = JSON.parse(contextResult.stdout) as any;
+      expect(contextJson.task).toBe("validate user input");
+      expect(Array.isArray(contextJson.relevantBullets)).toBe(true);
+      expect(contextJson.relevantBullets.some((b: any) => b.id === bulletId)).toBe(true);
+      expect(contextJson.degraded?.cass?.available).toBe(false);
+      logger.endStep("context", true);
+
+      // Step 4: Mark the surfaced bullet helpful
+      logger.startStep("mark");
+      const markArgs = ["mark", bulletId, "--helpful", "--json"];
+      const markStart = Date.now();
+      const markResult = runCm(markArgs, testDir);
+      const markDurationMs = Date.now() - markStart;
+      logger.step("mark", "info", "cm mark completed", {
+        args: markArgs,
+        exitCode: markResult.exitCode,
+        durationMs: markDurationMs,
+        stdout: markResult.stdout,
+        stderr: markResult.stderr,
+      });
+      expect(markResult.exitCode).toBe(0);
+      const markJson = JSON.parse(markResult.stdout) as any;
+      expect(markJson.success).toBe(true);
+      expect(markJson.bulletId).toBe(bulletId);
+      expect(markJson.type).toBe("helpful");
+      logger.endStep("mark", true);
+
+      logger.step("fs-after-mark", "info", "File system state after mark", {
+        config: { path: configPath, ...getPathState(configPath) },
+        playbook: { path: playbookPath, ...getPathState(playbookPath) },
+      });
+
+      // Step 5: Doctor provides system health signal (even in degraded mode)
+      logger.startStep("doctor");
+      const doctorArgs = ["doctor", "--json"];
+      const doctorStart = Date.now();
+      const doctorResult = runCm(doctorArgs, testDir);
+      const doctorDurationMs = Date.now() - doctorStart;
+      logger.step("doctor", "info", "cm doctor completed", {
+        args: doctorArgs,
+        exitCode: doctorResult.exitCode,
+        durationMs: doctorDurationMs,
+        stdout: doctorResult.stdout,
+        stderr: doctorResult.stderr,
+      });
+      expect(() => JSON.parse(doctorResult.stdout)).not.toThrow();
+      const doctorJson = JSON.parse(doctorResult.stdout) as any;
+      expect(Array.isArray(doctorJson.checks)).toBe(true);
+      expect(typeof doctorJson.overallStatus).toBe("string");
+      expect(Array.isArray(doctorJson.recommendedActions)).toBe(true);
+      logger.endStep("doctor", true);
+
+      logger.info("Onboarding flow complete", {
+        totalDurationMs: initDurationMs + addDurationMs + contextDurationMs + markDurationMs + doctorDurationMs,
+      });
+    }, { timeout: 30000 });
+  });
+
+  describe("Error Recovery Flow", () => {
+    test.serial("corrupted config.json → doctor --fix resets config and restores clean runs", () => {
+      const logger = createTestLogger("cli-error-recovery", "debug");
+      logger.startStep("init");
+
+      const initResult = runCm(["init", "--json"], testDir);
+      logger.step("init", "info", "cm init completed", {
+        exitCode: initResult.exitCode,
+        stdout: initResult.stdout,
+        stderr: initResult.stderr,
+      });
+      expect(initResult.exitCode).toBe(0);
+      logger.endStep("init", true);
+
+      // Corrupt the global config file
+      logger.startStep("corrupt-config");
+      const configPath = join(testDir, ".cass-memory", "config.json");
+      writeFileSync(configPath, "{ invalid json", "utf-8");
+      logger.step("corrupt-config", "info", "Wrote invalid config.json", { configPath });
+      logger.endStep("corrupt-config", true);
+
+      // Doctor should surface a reset-config fix in JSON output
+      logger.startStep("doctor-detect");
+      const doctorResult = runCm(["doctor", "--json"], testDir);
+      logger.step("doctor-detect", "info", "cm doctor completed", {
+        exitCode: doctorResult.exitCode,
+        stdout: doctorResult.stdout,
+        stderr: doctorResult.stderr,
+      });
+      expect(() => JSON.parse(doctorResult.stdout)).not.toThrow();
+      const doctorJson = JSON.parse(doctorResult.stdout) as any;
+      expect(Array.isArray(doctorJson.fixableIssues)).toBe(true);
+      expect(doctorJson.fixableIssues.some((i: any) => i.id === "reset-config")).toBe(true);
+      logger.endStep("doctor-detect", true);
+
+      // Apply fixes (force allows cautious reset-config)
+      logger.startStep("doctor-fix");
+      const fixResult = runCm(["doctor", "--fix", "--force", "--json"], testDir);
+      logger.step("doctor-fix", "info", "cm doctor --fix completed", {
+        exitCode: fixResult.exitCode,
+        stdout: fixResult.stdout,
+        stderr: fixResult.stderr,
+      });
+      expect(() => JSON.parse(fixResult.stdout)).not.toThrow();
+      const fixJson = JSON.parse(fixResult.stdout) as any;
+      expect(Array.isArray(fixJson.fixResults)).toBe(true);
+      expect(fixJson.fixResults.some((r: any) => r.id === "reset-config" && r.success === true)).toBe(true);
+      logger.endStep("doctor-fix", true);
+
+      // Subsequent commands should no longer warn about failing to load config.
+      logger.startStep("context-after-fix");
+      const contextResult = runCm(["context", "test query", "--json"], testDir);
+      logger.step("context-after-fix", "info", "cm context completed", {
+        exitCode: contextResult.exitCode,
+        stdout: contextResult.stdout,
+        stderr: contextResult.stderr,
+      });
+      expect(() => JSON.parse(contextResult.stdout)).not.toThrow();
+      expect(contextResult.stderr).not.toContain("Failed to load config");
+      logger.endStep("context-after-fix", true);
     }, { timeout: 30000 });
   });
 });

@@ -10,6 +10,7 @@ import { getEffectiveScore } from "../scoring.js";
 import { truncate, formatLastHelpful } from "../utils.js";
 import { PlaybookBullet, Config } from "../types.js";
 import chalk from "chalk";
+import { formatMaturityIcon, formatRule } from "../output.js";
 
 export interface TopFlags {
   scope?: "global" | "workspace" | "all";
@@ -107,26 +108,18 @@ function printTopBullets(bullets: RankedBullet[], flags: TopFlags): void {
   const filterStr = filterDesc.length > 0 ? ` (${filterDesc.join(", ")})` : "";
 
   console.log(chalk.bold(`\nTOP ${bullets.length} MOST EFFECTIVE BULLETS${filterStr}`));
-  console.log(chalk.gray("═".repeat(60)));
+  console.log(chalk.gray(formatRule("═", { maxWidth: 60 })));
   console.log();
 
   for (const b of bullets) {
-    const maturityIcon = getMaturityIcon(b.maturity);
+    const maturityIcon = formatMaturityIcon(b.maturity);
+    const maturityPrefix = maturityIcon ? `${maturityIcon} ` : "";
     const scoreColor = b.score >= 10 ? chalk.green : b.score >= 5 ? chalk.blue : b.score >= 0 ? chalk.white : chalk.red;
 
     console.log(`${chalk.bold(`${b.rank}.`)} ${scoreColor(`[Score: ${b.score.toFixed(1)}]`)} ${truncate(b.content, 50)}`);
-    console.log(chalk.gray(`   ${maturityIcon} ${b.maturity} | ${b.category} | ${b.scope}`));
+    console.log(chalk.gray(`   ${maturityPrefix}${b.maturity} | ${b.category} | ${b.scope}`));
     console.log(chalk.gray(`   Feedback: ${b.feedback.helpful}× helpful, ${b.feedback.harmful}× harmful`));
     console.log(chalk.gray(`   Last used: ${b.lastUsed}`));
     console.log();
-  }
-}
-
-function getMaturityIcon(maturity: string): string {
-  switch (maturity) {
-    case "proven": return "✅";
-    case "established": return "🔵";
-    case "candidate": return "🟡";
-    default: return "⚪";
   }
 }

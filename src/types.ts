@@ -336,6 +336,7 @@ export const ConfigSchema = z.object({
   validationEnabled: z.boolean().default(true),
   crossAgent: CrossAgentConfigSchema.default({}),
   semanticSearchEnabled: z.boolean().default(false),
+  semanticWeight: z.number().min(0).max(1).default(0.6),
   embeddingModel: z.string().default("Xenova/all-MiniLM-L6-v2"),
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
@@ -411,6 +412,24 @@ export const ScoredBulletSchema = PlaybookBulletSchema.extend({
 });
 export type ScoredBullet = z.infer<typeof ScoredBulletSchema>;
 
+export const DegradedCassReasonSchema = z.enum(["NOT_FOUND", "INDEX_MISSING", "TIMEOUT", "OTHER"]);
+export type DegradedCassReason = z.infer<typeof DegradedCassReasonSchema>;
+
+export const DegradedCassSchema = z.object({
+  available: z.boolean(),
+  reason: DegradedCassReasonSchema,
+  message: z.string().optional(),
+  suggestedFix: z.array(z.string()).optional(),
+});
+export type DegradedCass = z.infer<typeof DegradedCassSchema>;
+
+export const DegradedSummarySchema = z.object({
+  cass: DegradedCassSchema.optional(),
+  semantic: z.unknown().optional(),
+  llm: z.unknown().optional(),
+}).partial();
+export type DegradedSummary = z.infer<typeof DegradedSummarySchema>;
+
 export const ContextResultSchema = z.object({
   task: z.string(),
   relevantBullets: z.array(ScoredBulletSchema),
@@ -418,9 +437,77 @@ export const ContextResultSchema = z.object({
   historySnippets: z.array(CassSearchHitSchema),
   deprecatedWarnings: z.array(z.string()),
   suggestedCassQueries: z.array(z.string()),
+  degraded: DegradedSummarySchema.optional(),
   formattedPrompt: z.string().optional(),
 });
 export type ContextResult = z.infer<typeof ContextResultSchema>;
+
+// ============================================================================
+// DOCTOR OUTPUT
+// ============================================================================
+
+export const DoctorCheckStatusSchema = z.enum(["pass", "warn", "fail"]);
+export type DoctorCheckStatus = z.infer<typeof DoctorCheckStatusSchema>;
+
+export const DoctorOverallStatusSchema = z.enum(["healthy", "degraded", "unhealthy"]);
+export type DoctorOverallStatus = z.infer<typeof DoctorOverallStatusSchema>;
+
+export const DoctorCheckSchema = z.object({
+  category: z.string(),
+  item: z.string(),
+  status: DoctorCheckStatusSchema,
+  message: z.string(),
+  details: z.unknown().optional(),
+});
+export type DoctorCheck = z.infer<typeof DoctorCheckSchema>;
+
+export const DoctorFixableIssueSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  category: z.string(),
+  severity: z.enum(["warn", "fail"]),
+  safety: z.enum(["safe", "cautious", "manual"]),
+  howToFix: z.array(z.string()).optional(),
+});
+export type DoctorFixableIssue = z.infer<typeof DoctorFixableIssueSchema>;
+
+export const DoctorRecommendedActionSchema = z.object({
+  label: z.string(),
+  command: z.string().optional(),
+  reason: z.string(),
+  urgency: z.enum(["high", "medium", "low"]),
+});
+export type DoctorRecommendedAction = z.infer<typeof DoctorRecommendedActionSchema>;
+
+export const DoctorFixPlanSchema = z.object({
+  enabled: z.boolean(),
+  dryRun: z.boolean(),
+  interactive: z.boolean(),
+  force: z.boolean(),
+  wouldApply: z.array(z.string()),
+  wouldSkip: z.array(z.object({ id: z.string(), reason: z.string() })),
+});
+export type DoctorFixPlan = z.infer<typeof DoctorFixPlanSchema>;
+
+export const DoctorFixResultSchema = z.object({
+  id: z.string(),
+  success: z.boolean(),
+  message: z.string(),
+});
+export type DoctorFixResult = z.infer<typeof DoctorFixResultSchema>;
+
+export const DoctorResultSchema = z.object({
+  version: z.string(),
+  generatedAt: z.string(),
+  overallStatus: DoctorOverallStatusSchema,
+  checks: z.array(DoctorCheckSchema),
+  fixableIssues: z.array(DoctorFixableIssueSchema),
+  recommendedActions: z.array(DoctorRecommendedActionSchema),
+  fixPlan: DoctorFixPlanSchema.optional(),
+  fixResults: z.array(DoctorFixResultSchema).optional(),
+  selfTest: z.array(DoctorCheckSchema).optional(),
+});
+export type DoctorResult = z.infer<typeof DoctorResultSchema>;
 
 // ============================================================================
 // VALIDATION TYPES

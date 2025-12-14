@@ -17,6 +17,9 @@ import {
   DEFAULT_REFLECTOR_RESPONSE,
   DEFAULT_VALIDATOR_RESPONSE
 } from "./helpers/llm-shim.js";
+import { extractDiary } from "../src/llm.js";
+import { DiaryEntrySchema } from "../src/types.js";
+import { DEFAULT_CONFIG } from "../src/config.js";
 
 afterEach(() => {
   mock.restore();
@@ -53,8 +56,8 @@ describe("LLM Shim", () => {
           model: {} as any
         });
 
-        expect(result.object.status).toBe("success");
-        expect(result.object.accomplishments).toContain("Built feature X");
+        expect((result.object as any).status).toBe("success");
+        expect((result.object as any).accomplishments).toContain("Built feature X");
       });
     });
 
@@ -72,9 +75,9 @@ describe("LLM Shim", () => {
             model: {} as any
           });
 
-          expect(result.object.deltas).toHaveLength(1);
-          expect(result.object.deltas[0].type).toBe("add");
-          expect(result.object.deltas[0].bullet.content).toBe("Always use TypeScript");
+          expect((result.object as any).deltas).toHaveLength(1);
+          expect((result.object as any).deltas[0].type).toBe("add");
+          expect((result.object as any).deltas[0].bullet.content).toBe("Always use TypeScript");
         }
       );
     });
@@ -89,8 +92,8 @@ describe("LLM Shim", () => {
           model: {} as any
         });
 
-        expect(result.object.verdict).toBe("REJECT");
-        expect(result.object.reasoning).toBe("Not enough evidence");
+        expect((result.object as any).verdict).toBe("REJECT");
+        expect((result.object as any).reasoning).toBe("Not enough evidence");
       });
     });
 
@@ -203,34 +206,42 @@ describe("LLM Shim", () => {
 
   describe("Function Responses", () => {
     it("supports function-based extractDiary responses", async () => {
-      let receivedContent = "";
+      // Set dummy key to pass validation in getModel
+      const originalKey = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = "dummy-key";
 
-      await withLlmShim({
-        extractDiary: (content) => {
-          receivedContent = content;
-          return {
-            status: "success",
-            accomplishments: [`Processed: ${content.slice(0, 10)}`],
-            decisions: [],
-            challenges: [],
-            preferences: [],
-            keyLearnings: [],
-            tags: [],
-            searchAnchors: []
-          };
-        }
-      }, async () => {
-        const ai = await import("ai");
+      try {
+        const result = await withLlmShim(
+          {
+            extractDiary: (prompt) => {
+              if (prompt.includes("Processed:")) return {
+                status: "success",
+                accomplishments: ["Processed: data"],
+                decisions: [],
+                challenges: [],
+                keyLearnings: [],
+                preferences: [],
+                tags: []
+              };
+              return { status: "failure", accomplishments: [], decisions: [], challenges: [], preferences: [], keyLearnings: [], tags: [] };
+            }
+          },
+          async () => {
+            return extractDiary(
+              DiaryEntrySchema.omit({ id: true, sessionPath: true, timestamp: true, relatedSessions: true, searchAnchors: true }),
+              "Processed: something",
+              { agent: "claude", sessionPath: "/s1" },
+              DEFAULT_CONFIG
+            );
+          }
+        );
 
-        const result = await ai.generateObject({
-          prompt: "Extract diary from THIS_IS_TEST_CONTENT",
-          schema: {} as any,
-          model: {} as any
-        });
-
-        expect(receivedContent).toContain("THIS_IS_TEST_CONTENT");
-        expect(result.object.accomplishments[0]).toContain("Processed:");
-      });
+        const obj = result as any;
+        expect(obj.accomplishments[0]).toContain("Processed:");
+      } finally {
+        if (originalKey) process.env.ANTHROPIC_API_KEY = originalKey;
+        else delete process.env.ANTHROPIC_API_KEY;
+      }
     });
   });
 });

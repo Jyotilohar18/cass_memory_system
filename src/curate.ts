@@ -55,6 +55,7 @@ function findSimilarBullet(
 const NEGATIVE_MARKERS = ["never", "dont", "don't", "avoid", "forbid", "forbidden", "disable", "prevent", "stop", "skip"];
 const POSITIVE_MARKERS = ["always", "must", "required", "ensure", "use", "enable"];
 const EXCEPTION_MARKERS = ["unless", "except", "only if", "only when", "except when"];
+const ALL_MARKERS = [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS];
 
 function hasMarker(text: string, markers: string[]): boolean {
   // Use word boundaries to avoid substring matches (e.g., "use" matching "user")
@@ -67,6 +68,12 @@ export function detectConflicts(
   existingBullets: PlaybookBullet[]
 ): { id: string; content: string; reason: string }[] {
   const conflicts: { id: string; content: string; reason: string }[] = [];
+  
+  // Pre-check markers in new content once
+  const markersInNew = hasMarker(newContent, ALL_MARKERS);
+  const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
+  const newPos = hasMarker(newContent, POSITIVE_MARKERS);
+  const newExc = hasMarker(newContent, EXCEPTION_MARKERS);
 
   for (const b of existingBullets) {
     if (b.deprecated) continue;
@@ -74,8 +81,7 @@ export function detectConflicts(
     const overlap = jaccardSimilarity(newContent, b.content);
     
     // Check markers efficiently if overlap is borderline
-    const markersInNew = hasMarker(newContent, [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS]);
-    const markersInOld = hasMarker(b.content, [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS]);
+    const markersInOld = hasMarker(b.content, ALL_MARKERS);
     
     // Optimization: Check overlap first. 
     // When strong markers are present, allow lower overlap threshold.
@@ -83,11 +89,8 @@ export function detectConflicts(
     const minOverlap = hasDirectiveMarkers ? 0.1 : 0.2;
     if (overlap < minOverlap) continue;
 
-    const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
     const oldNeg = hasMarker(b.content, NEGATIVE_MARKERS);
-    const newPos = hasMarker(newContent, POSITIVE_MARKERS);
     const oldPos = hasMarker(b.content, POSITIVE_MARKERS);
-    const newExc = hasMarker(newContent, EXCEPTION_MARKERS);
     const oldExc = hasMarker(b.content, EXCEPTION_MARKERS);
 
     // Heuristic 1: Negation conflict (one negative, one affirmative)
@@ -162,6 +165,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     isNegative: true,
     scope: bullet.scope,
     workspace: bullet.workspace,
+    source: "learned", // Derived from existing rule, so implicitly learned/inferred
     state: "active", 
     maturity: "candidate", 
     createdAt: now(),
@@ -496,20 +500,21 @@ export function curatePlaybook(
     if (bullet.deprecated || invertedBulletIds.has(bullet.id)) continue;
 
     const oldMaturity = bullet.maturity;
-    const newMaturity = checkForPromotion(bullet, config);
+    const promoted = checkForPromotion(bullet, config);
 
-    if (newMaturity !== oldMaturity) {
-      bullet.maturity = newMaturity;
+    if (promoted !== oldMaturity) {
+      bullet.maturity = promoted;
       result.promotions.push({
         bulletId: bullet.id,
         from: oldMaturity,
-        to: newMaturity,
-        reason: `Auto-promoted from ${oldMaturity} to ${newMaturity}`
+        to: promoted,
+        reason: `Auto-promoted based on feedback`
       });
-      logDecision(decisionLog, "promotion", "accepted", `Maturity promoted from ${oldMaturity} to ${newMaturity}`, {
+      
+      logDecision(decisionLog, "promotion", "accepted", `Maturity promoted from ${oldMaturity} to ${promoted}`, {
         bulletId: bullet.id,
         content: bullet.content.slice(0, 100),
-        details: { from: oldMaturity, to: newMaturity }
+        details: { from: oldMaturity, to: promoted }
       });
     }
 

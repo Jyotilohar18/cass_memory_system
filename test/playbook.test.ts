@@ -368,10 +368,25 @@ describe("savePlaybook", () => {
       const pb = createEmptyPlaybook("test");
       const beforeSave = pb.metadata.lastReflection;
 
-      await savePlaybook(pb, file);
+      await savePlaybook(pb, file, { updateLastReflection: true });
 
       expect(pb.metadata.lastReflection).toBeTruthy();
       expect(pb.metadata.lastReflection).not.toBe(beforeSave);
+    });
+  });
+
+  it("does not update lastReflection timestamp by default", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const pb = createEmptyPlaybook("test");
+      // Set an initial timestamp
+      const initialTs = "2024-01-01T00:00:00.000Z";
+      pb.metadata.lastReflection = initialTs;
+
+      await savePlaybook(pb, file);
+
+      const loaded = await loadPlaybook(file);
+      expect(loaded.metadata.lastReflection).toBe(initialTs);
     });
   });
 

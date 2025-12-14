@@ -3,13 +3,15 @@ import path from "node:path";
 import { loadConfig, getSanitizeConfig } from "../config.js";
 import { sanitize } from "../sanitize.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { safeCassSearch } from "../cass.js";
+import { safeCassSearchWithDegraded } from "../cass.js";
 import {
   extractKeywords,
   scoreBulletRelevance,
   checkDeprecatedPatterns,
   generateSuggestedQueries,
   warn,
+  isJsonOutput,
+  printJson,
   truncate,
   formatLastHelpful,
   extractBulletReasoning,
@@ -17,12 +19,15 @@ import {
   ensureDir,
   expandPath,
   resolveRepoDir,
-  fileExists
+  fileExists,
+  atomicWrite
 } from "../utils.js";
+import { withLock } from "../lock.js";
 import { getEffectiveScore } from "../scoring.js";
-import { ContextResult, ScoredBullet, Config, CassSearchHit } from "../types.js";
+import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet } from "../types.js";
 import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
 import chalk from "chalk";
+import { formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 
 // ============================================================================ 
 // buildContextResult - Assemble final ContextResult output
@@ -94,6 +99,85 @@ export interface ContextComputation {
   suggestedQueries: string[];
 }
 
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+export async function scoreBulletsEnhanced(
+  bullets: PlaybookBullet[],
+  task: string,
+  keywords: string[],
+  config: Config,
+  options: { json?: boolean; queryEmbedding?: number[]; skipEmbeddingLoad?: boolean } = {}
+): Promise<ScoredBullet[]> {
+  if (bullets.length === 0) return [];
+
+  const embeddingModel =
+    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+      ? config.embeddingModel.trim()
+      : undefined;
+  const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+
+  const semanticWeight = clamp01(
+    typeof config.semanticWeight === "number" ? config.semanticWeight : 0.6
+  );
+
+  let queryEmbedding: number[] | null = null;
+  if (semanticEnabled) {
+    try {
+      queryEmbedding =
+        Array.isArray(options.queryEmbedding) && options.queryEmbedding.length > 0
+          ? options.queryEmbedding
+          : await embedText(task, { model: embeddingModel });
+
+      if (!options.skipEmbeddingLoad) {
+        await loadOrComputeEmbeddingsForBullets(bullets, { model: embeddingModel });
+      }
+    } catch (err: any) {
+      queryEmbedding = null;
+      if (!options.json) {
+        warn(
+          `[context] Semantic search unavailable; using keyword-only scoring. ${err?.message || ""}`.trim()
+        );
+      }
+    }
+  }
+
+  const scored: ScoredBullet[] = bullets.map((b) => {
+    const keywordScore = scoreBulletRelevance(b.content, b.tags, keywords);
+
+    const hasSemantic =
+      semanticEnabled &&
+      queryEmbedding &&
+      queryEmbedding.length > 0 &&
+      Array.isArray(b.embedding) &&
+      b.embedding.length > 0;
+
+    const semanticSimilarity = hasSemantic
+      ? Math.max(0, cosineSimilarity(queryEmbedding!, b.embedding!))
+      : 0;
+    const semanticScore = semanticSimilarity * 10;
+
+    const w = hasSemantic ? semanticWeight : 0;
+    const relevanceScore = keywordScore * (1 - w) + semanticScore * w;
+    const effectiveScore = getEffectiveScore(b, config);
+    const finalScore = relevanceScore * Math.max(0.1, effectiveScore);
+
+    return {
+      ...b,
+      relevanceScore,
+      effectiveScore,
+      finalScore,
+    };
+  });
+
+  scored.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
+  return scored;
+}
+
 /**
  * Programmatic context builder (no console output).
  */
@@ -112,45 +196,9 @@ export async function generateContextResult(
     return b.workspace === flags.workspace;
   });
 
-  let queryEmbedding: number[] | null = null;
-  const embeddingModel =
-    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
-      ? config.embeddingModel.trim()
-      : undefined;
-  const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
-
-  if (semanticEnabled) {
-    try {
-      queryEmbedding = await embedText(task, { model: embeddingModel });
-      await loadOrComputeEmbeddingsForBullets(activeBullets, { model: embeddingModel });
-    } catch (err: any) {
-      queryEmbedding = null;
-      if (!flags.json) {
-        warn(`[context] Semantic search unavailable; using keyword-only scoring. ${err?.message || ""}`.trim());
-      }
-    }
-  }
-
-  const scoredBullets: ScoredBullet[] = activeBullets.map(b => {
-    const keywordRelevance = scoreBulletRelevance(b.content, b.tags, keywords);
-    const semanticRelevance =
-      queryEmbedding && b.embedding
-        ? Math.max(0, cosineSimilarity(queryEmbedding, b.embedding))
-        : 0;
-
-    const relevance = keywordRelevance + semanticRelevance * 10;
-    const effective = getEffectiveScore(b, config);
-    const final = relevance * Math.max(0.1, effective);
-
-    return {
-      ...b,
-      relevanceScore: relevance,
-      effectiveScore: effective,
-      finalScore: final
-    };
+  const scoredBullets = await scoreBulletsEnhanced(activeBullets, task, keywords, config, {
+    json: flags.json,
   });
-
-  scoredBullets.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
 
   const topBullets = scoredBullets
     .filter(b => (b.finalScore || 0) > 0)
@@ -159,25 +207,18 @@ export async function generateContextResult(
   const rules = topBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
   const antiPatterns = topBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
 
-  // Check cass availability first
-  const { cassAvailable, handleCassUnavailable } = await import("../cass.js");
-  const availability = await handleCassUnavailable({ cassPath: config.cassPath });
-  
   let cassHits: CassSearchHit[] = [];
-  
-  if (availability.canContinue && availability.fallbackMode === "none") {
-    const cassQuery = keywords.join(" ");
-    // Pass config to safeCassSearch to enable sanitization of search results
-    cassHits = await safeCassSearch(cassQuery, {
-      limit: flags.history || config.maxHistoryInContext,
-      days: flags.days || config.sessionLookbackDays,
-      workspace: flags.workspace
-    }, config.cassPath, config);
-  } else {
-    // Degraded mode
-    if (!flags.json) { // Only log if not JSON output to keep stdout clean
-       warn(availability.message);
-    }
+  let degraded: ContextResult["degraded"] | undefined;
+
+  const cassQuery = keywords.join(" ");
+  const cassResult = await safeCassSearchWithDegraded(cassQuery, {
+    limit: flags.history || config.maxHistoryInContext,
+    days: flags.days || config.sessionLookbackDays,
+    workspace: flags.workspace,
+  }, config.cassPath, config);
+  cassHits = cassResult.hits;
+  if (cassResult.degraded) {
+    degraded = { cass: cassResult.degraded };
   }
 
   const warnings: string[] = [];
@@ -192,9 +233,13 @@ export async function generateContextResult(
     }
   }
 
-  const suggestedQueries = generateSuggestedQueries(task, keywords, {
+  const suggestedQueriesBase = generateSuggestedQueries(task, keywords, {
     maxSuggestions: 5
   });
+  const suggestedQueries =
+    degraded?.cass?.suggestedFix && degraded.cass.suggestedFix.length > 0
+      ? Array.from(new Set([...degraded.cass.suggestedFix, ...suggestedQueriesBase]))
+      : suggestedQueriesBase;
 
   const result = buildContextResult(
     task,
@@ -205,6 +250,9 @@ export async function generateContextResult(
     suggestedQueries,
     config
   );
+  if (degraded) {
+    result.degraded = degraded;
+  }
 
   const shouldLog =
     flags.logContext ||
@@ -255,8 +303,10 @@ async function appendContextLog(entry: {
       source: "context",
     };
     
-    // Simple append is sufficient for logs
-    await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
+    // Use withLock to prevent race conditions during concurrent appends
+    await withLock(logPath, async () => {
+      await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
+    });
   } catch {
     // Best-effort logging; never block context generation
   }
@@ -351,63 +401,105 @@ export async function contextCommand(
 ) {
   const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(task, flags);
 
-  const wantsJson = flags.format === "json" || flags.json;
+  const wantsJson = isJsonOutput(flags);
 
   if (wantsJson) {
-    console.log(JSON.stringify(result, null, 2));
+    printJson(result);
+    return;
+  }
+
+  const cli = getCliName();
+  const maxWidth = Math.min(getOutputStyle().width, 84);
+  const divider = chalk.dim(formatRule("─", { maxWidth }));
+
+  // Human Output (premium, width-aware)
+  console.log(chalk.bold(`CONTEXT FOR: ${task}`));
+  console.log(divider);
+
+  if (result.degraded?.cass && !result.degraded.cass.available) {
+    const cass = result.degraded.cass;
+    const suggested = Array.isArray(cass.suggestedFix) ? cass.suggestedFix.filter(Boolean) : [];
+    const primaryHint = suggested[0] || `${cli} doctor`;
+    console.log(chalk.yellow(`${iconPrefix("warning")}History unavailable (cass: ${cass.reason}).`));
+    console.log(chalk.yellow(`  Next: ${primaryHint}`));
+    console.log("");
+  }
+
+  // Playbook rules
+  if (rules.length > 0) {
+    console.log(chalk.bold(`PLAYBOOK RULES (${rules.length})`));
+    console.log(divider);
+    const contentWidth = Math.max(24, maxWidth - 2);
+
+    for (const b of rules) {
+      const score = Number.isFinite(b.effectiveScore) ? b.effectiveScore.toFixed(1) : "n/a";
+      const maturity = b.maturity ? ` • ${b.maturity}` : "";
+      console.log(chalk.bold(`[${b.id}]`) + chalk.dim(` ${b.category}/${b.kind} • score ${score}${maturity}`));
+      for (const line of wrapText(b.content, contentWidth)) {
+        console.log(`  ${line}`);
+      }
+      console.log("");
+    }
   } else {
-    const cli = getCliName();
-    // Human Output
-    console.log(chalk.bold(`═══════════════════════════════════════════════════════════════`));
-    console.log(chalk.bold(`CONTEXT FOR: ${task}`));
-    console.log(chalk.bold(`═══════════════════════════════════════════════════════════════
-`));
+    console.log(chalk.bold("PLAYBOOK RULES (0)"));
+    console.log(divider);
+    console.log(chalk.gray("(No relevant playbook rules found)"));
+    console.log(chalk.gray(`  ${formatTipPrefix()}Run '${cli} reflect' to start learning from your agent sessions.`));
+    console.log("");
+  }
 
-    if (rules.length > 0) {
-      console.log(chalk.blue.bold(`RELEVANT PLAYBOOK RULES (${rules.length}):
-`));
-      rules.forEach(b => {
-        console.log(chalk.bold(`[${b.id}] ${b.category}/${b.kind} (score: ${b.effectiveScore.toFixed(1)})`));
-        console.log(`  ${b.content}`);
-        console.log("");
-      });
-    } else {
-      console.log(chalk.gray("(No relevant playbook rules found)"));
-      console.log(chalk.gray(`  💡 Run '${cli} reflect' to start learning from your agent sessions.
-`));
+  // Pitfalls
+  if (antiPatterns.length > 0) {
+    console.log(chalk.yellow.bold(`${iconPrefix("warning")}PITFALLS TO AVOID (${antiPatterns.length})`));
+    console.log(divider);
+    const contentWidth = Math.max(24, maxWidth - 4);
+    for (const b of antiPatterns) {
+      console.log(chalk.yellow(`- [${b.id}]`));
+      for (const line of wrapText(b.content, contentWidth)) {
+        console.log(chalk.yellow(`  ${line}`));
+      }
     }
+    console.log("");
+  }
 
-    if (antiPatterns.length > 0) {
-      console.log(chalk.red.bold(`PITFALLS TO AVOID (${antiPatterns.length}):
-`));
-      antiPatterns.forEach(b => {
-        console.log(chalk.red(`[${b.id}] ${b.content}`));
-      });
+  // History (explicit truncation)
+  if (cassHits.length > 0) {
+    const total = cassHits.length;
+    const shown = Math.min(total, 3);
+    const showing = total > shown ? ` (showing ${shown} of ${total})` : "";
+    console.log(chalk.bold(`HISTORY${showing}`));
+    console.log(divider);
+
+    const snippetWidth = Math.max(24, maxWidth - 4);
+    cassHits.slice(0, shown).forEach((h, i) => {
+      const agent = h.agent || "unknown";
+      console.log(chalk.bold(`${i + 1}. ${agent}`) + chalk.dim(` • ${h.source_path}`));
+      const snippet = h.snippet.trim().replace(/\s+/g, " ");
+      for (const line of wrapText(`"${snippet}"`, snippetWidth)) {
+        console.log(chalk.gray(`  ${line}`));
+      }
       console.log("");
-    }
+    });
+  } else if (!result.degraded?.cass || result.degraded.cass.available) {
+    console.log(chalk.bold("HISTORY (0)"));
+    console.log(divider);
+    console.log(chalk.gray("(No relevant history found)"));
+    console.log(chalk.gray(`  ${formatTipPrefix()}Use Claude Code, Cursor, or Codex to build session history.`));
+    console.log("");
+  }
 
-    if (cassHits.length > 0) {
-      console.log(chalk.blue.bold(`HISTORICAL CONTEXT (${cassHits.length} sessions):
-`));
-      cassHits.slice(0, 3).forEach((h, i) => {
-        console.log(`${i + 1}. ${h.source_path} (${h.agent || "unknown"})`);
-        console.log(chalk.gray(`   "${h.snippet.trim().replace(/\n/g, " ")}"`));
-        console.log("");
-      });
-    } else {
-      console.log(chalk.gray("(No relevant history found)"));
-      console.log(chalk.gray(`  💡 Use Claude Code, Cursor, or Codex to build session history.
-`));
-    }
+  // Warnings
+  if (warnings.length > 0) {
+    console.log(chalk.yellow.bold(`${iconPrefix("warning")}WARNINGS (${warnings.length})`));
+    console.log(divider);
+    warnings.forEach((w) => console.log(chalk.yellow(`- ${w}`)));
+    console.log("");
+  }
 
-    if (warnings.length > 0) {
-      console.log(chalk.yellow.bold(`⚠️  WARNINGS:
-`));
-      warnings.forEach(w => console.log(chalk.yellow(`  • ${w}`)));
-      console.log("");
-    }
-
-    console.log(chalk.blue.bold(`SUGGESTED SEARCHES:`));
-    suggestedQueries.forEach(q => console.log(`  ${q}`));
+  // Suggested searches
+  if (suggestedQueries.length > 0) {
+    console.log(chalk.bold("SUGGESTED SEARCHES"));
+    console.log(divider);
+    suggestedQueries.forEach((q) => console.log(`- ${q}`));
   }
 }

@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, checkAbort, isPermissionError, handlePermissionError } from "../utils.js";
+import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJson, printJsonError, atomicWrite } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -9,10 +9,12 @@ import chalk from "chalk";
 import path from "node:path";
 import fs from "node:fs/promises";
 import readline from "node:readline";
+import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../output.js";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type OverallStatus = "healthy" | "degraded" | "unhealthy";
 type PatternMatch = { pattern: string; sample: string; replacement: string; suggestion?: string };
+type ActionUrgency = "high" | "medium" | "low";
 
 /**
  * Represents an issue that can be automatically fixed.
@@ -51,6 +53,8 @@ export interface ApplyFixesOptions {
   dryRun?: boolean;
   /** If true, apply even cautious fixes without prompting */
   force?: boolean;
+  /** If true, suppress console output (JSON-safe) */
+  quiet?: boolean;
 }
 
 export interface HealthCheck {
@@ -61,10 +65,355 @@ export interface HealthCheck {
   details?: unknown;
 }
 
-function statusIcon(status: CheckStatus): string {
-  if (status === "pass") return "✅";
-  if (status === "warn") return "⚠️ ";
-  return "❌";
+type FixableIssueSummary = {
+  id: string;
+  description: string;
+  category: string;
+  severity: "warn" | "fail";
+  safety: "safe" | "cautious" | "manual";
+  howToFix?: string[];
+};
+
+type RecommendedAction = {
+  label: string;
+  command?: string;
+  reason: string;
+  urgency: ActionUrgency;
+};
+
+type FixPlan = {
+  enabled: boolean;
+  dryRun: boolean;
+  interactive: boolean;
+  force: boolean;
+  wouldApply: string[];
+  wouldSkip: Array<{ id: string; reason: string }>;
+};
+
+type JsonFileValidation = { valid: true } | { valid: false; error: string };
+
+async function validateJsonFile(filePath: string): Promise<JsonFileValidation> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    JSON.parse(raw);
+    return { valid: true };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || String(err) };
+  }
+}
+
+function computeOverallStatus(checks: HealthCheck[]): OverallStatus {
+  let overallStatus: OverallStatus = "healthy";
+  for (const check of checks) {
+    overallStatus = nextOverallStatus(overallStatus, check.status);
+  }
+  return overallStatus;
+}
+
+function summarizeFixableIssue(issue: FixableIssue): FixableIssueSummary {
+  const cli = getCliName();
+  const howToFix =
+    issue.safety === "cautious"
+      ? [`${cli} doctor --fix --force --no-interactive`]
+      : issue.safety === "manual"
+        ? undefined
+        : [`${cli} doctor --fix --no-interactive`];
+
+  return {
+    id: issue.id,
+    description: issue.description,
+    category: issue.category,
+    severity: issue.severity,
+    safety: issue.safety,
+    howToFix,
+  };
+}
+
+function buildFixPlan(
+  issues: FixableIssueSummary[],
+  options: { fix: boolean; dryRun: boolean; interactive: boolean; force: boolean }
+): FixPlan {
+  if (!options.fix && !options.dryRun) {
+    return {
+      enabled: false,
+      dryRun: options.dryRun,
+      interactive: options.interactive,
+      force: options.force,
+      wouldApply: [],
+      wouldSkip: [],
+    };
+  }
+
+  const wouldApply: string[] = [];
+  const wouldSkip: Array<{ id: string; reason: string }> = [];
+
+  for (const issue of issues) {
+    if (issue.safety === "manual") {
+      wouldSkip.push({ id: issue.id, reason: "manual fix required" });
+      continue;
+    }
+    if (issue.safety === "cautious" && !options.force) {
+      wouldSkip.push({ id: issue.id, reason: "requires --force" });
+      continue;
+    }
+    wouldApply.push(issue.id);
+  }
+
+  return {
+    enabled: true,
+    dryRun: options.dryRun,
+    interactive: options.interactive,
+    force: options.force,
+    wouldApply,
+    wouldSkip,
+  };
+}
+
+function uniqRecommendedActions(actions: RecommendedAction[]): RecommendedAction[] {
+  const seen = new Set<string>();
+  const out: RecommendedAction[] = [];
+  for (const a of actions) {
+    const key = `${a.label}::${a.command || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(a);
+  }
+  return out;
+}
+
+function buildRecommendedActions(params: {
+  overallStatus: OverallStatus;
+  checks: HealthCheck[];
+  fixableIssues: FixableIssueSummary[];
+  options: { fix: boolean; dryRun: boolean; force: boolean };
+}): RecommendedAction[] {
+  const cli = getCliName();
+  const actions: RecommendedAction[] = [];
+
+  const cassCheck = params.checks.find((c) => c.item === "cass");
+  if (cassCheck?.status === "fail") {
+    actions.push({
+      label: "Install cass (enables history)",
+      command: "cargo install cass",
+      reason: "cass is required for cross-agent history snippets and validation evidence.",
+      urgency: "high",
+    });
+  }
+
+  const globalStorage = params.checks.find((c) => c.item === "Global (~/.cass-memory)");
+  if (globalStorage?.status === "warn") {
+    actions.push({
+      label: "Initialize global storage",
+      command: `${cli} init`,
+      reason: "Global config/playbook/diary is required for normal operation.",
+      urgency: "high",
+    });
+  }
+
+  const llmCheck = params.checks.find((c) => c.category === "LLM");
+  if (llmCheck?.status === "fail") {
+    actions.push({
+      label: "Configure an LLM API key (optional but recommended)",
+      command: "export ANTHROPIC_API_KEY=\"...\"  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY",
+      reason: "LLM-backed reflection/validation requires an API key. The CLI still works in offline mode.",
+      urgency: "medium",
+    });
+  }
+
+  const repoCheck = params.checks.find((c) => c.item === "Repo (.cass/)");
+  if (repoCheck?.status === "warn") {
+    actions.push({
+      label: "Initialize repo-level memory (optional)",
+      command: `${cli} init --repo`,
+      reason: "Repo-level playbook/blocked list enables shared project memory.",
+      urgency: "low",
+    });
+  }
+
+  if (params.fixableIssues.length > 0 && !params.options.fix) {
+    actions.push({
+      label: "Apply safe auto-fixes",
+      command: `${cli} doctor --fix --no-interactive`,
+      reason: "Fixes missing files/dirs and other safe issues.",
+      urgency: params.overallStatus === "healthy" ? "low" : "medium",
+    });
+  }
+
+  if (params.options.fix && params.options.dryRun) {
+    actions.push({
+      label: "Apply fixes for real (after reviewing the plan)",
+      command: params.options.force
+        ? `${cli} doctor --fix --force --no-interactive`
+        : `${cli} doctor --fix --no-interactive`,
+      reason: "Dry-run mode does not modify files.",
+      urgency: "medium",
+    });
+  }
+
+  const byUrgency: Record<ActionUrgency, number> = { high: 0, medium: 1, low: 2 };
+  return uniqRecommendedActions(actions).sort((a, b) => byUrgency[a.urgency] - byUrgency[b.urgency]);
+}
+
+async function computeDoctorChecks(
+  config: Config,
+  options: { configLoadError?: unknown } = {}
+): Promise<HealthCheck[]> {
+  const checks: HealthCheck[] = [];
+
+  // 1) cass integration
+  const cassOk = cassAvailable(config.cassPath);
+  checks.push({
+    category: "Cass Integration",
+    item: "cass",
+    status: cassOk ? "pass" : "fail",
+    message: cassOk ? "cass CLI found" : "cass CLI not found",
+    details: cassOk ? await cassStats(config.cassPath) : undefined,
+  });
+
+  // 2) Global Storage
+  const globalDir = resolveGlobalDir();
+  const globalPlaybookExists = await fileExists(path.join(globalDir, "playbook.yaml"));
+  const globalConfigExists = await fileExists(path.join(globalDir, "config.json"));
+  const globalDiaryExists = await fileExists(path.join(globalDir, "diary"));
+
+  const missingGlobal: string[] = [];
+  if (!globalPlaybookExists) missingGlobal.push("playbook.yaml");
+  if (!globalConfigExists) missingGlobal.push("config.json");
+  if (!globalDiaryExists) missingGlobal.push("diary/");
+
+  checks.push({
+    category: "Global Storage (~/.cass-memory)",
+    item: "Structure",
+    status: missingGlobal.length === 0 ? "pass" : "warn",
+    message: missingGlobal.length === 0 ? "All global files found" : `Missing: ${missingGlobal.join(", ")}`,
+  });
+
+  // 2.5) Global config validity
+  const globalConfigPath = path.join(globalDir, "config.json");
+  if (globalConfigExists) {
+    if (options.configLoadError) {
+      const message =
+        options.configLoadError instanceof Error
+          ? options.configLoadError.message
+          : String(options.configLoadError);
+      checks.push({
+        category: "Configuration",
+        item: "config.json",
+        status: "fail",
+        message: `Config validation failed: ${message}`,
+        details: { path: globalConfigPath },
+      });
+    } else {
+      const validation = await validateJsonFile(globalConfigPath);
+      checks.push({
+        category: "Configuration",
+        item: "config.json",
+        status: validation.valid ? "pass" : "fail",
+        message: validation.valid ? "Global config.json is valid JSON" : `Global config.json is invalid JSON: ${validation.error}`,
+        details: validation.valid ? { path: globalConfigPath } : { path: globalConfigPath, error: validation.error },
+      });
+    }
+  }
+
+  // 3) LLM config
+  const hasApiKey = isLLMAvailable(config.provider) || !!config.apiKey;
+  checks.push({
+    category: "LLM Configuration",
+    item: "Provider",
+    status: hasApiKey ? "pass" : "fail",
+    message: `Provider: ${config.provider}, API Key: ${hasApiKey ? "Set" : "Missing"}`,
+  });
+
+  // 4) Repo-level .cass/ structure (if in a git repo)
+  const cassDir = await resolveRepoDir();
+  if (cassDir) {
+    const repoPlaybookExists = await fileExists(path.join(cassDir, "playbook.yaml"));
+    const repoBlockedExists = await fileExists(path.join(cassDir, "blocked.log"));
+
+    const hasStructure = repoPlaybookExists || repoBlockedExists;
+    const isComplete = repoPlaybookExists && repoBlockedExists;
+
+    let status: CheckStatus = "pass";
+    let message = "";
+
+    if (!hasStructure) {
+      status = "warn";
+      message = `Not initialized. Run \`${getCliName()} init --repo\` to enable project-level memory.`;
+    } else if (!isComplete) {
+      status = "warn";
+      const missing: string[] = [];
+      if (!repoPlaybookExists) missing.push("playbook.yaml");
+      if (!repoBlockedExists) missing.push("blocked.log");
+      message = `Partial setup. Missing: ${missing.join(", ")}. Run \`${getCliName()} init --repo --force\` to complete.`;
+    } else {
+      message = "Complete (.cass/playbook.yaml and .cass/blocked.log present)";
+    }
+
+    checks.push({
+      category: "Repo .cass/ Structure",
+      item: "Structure",
+      status,
+      message,
+      details: {
+        cassDir,
+        playbookExists: repoPlaybookExists,
+        blockedLogExists: repoBlockedExists,
+      },
+    });
+  } else {
+    checks.push({
+      category: "Repo .cass/ Structure",
+      item: "Availability",
+      status: "warn",
+      message: "Not in a git repository. Repo-level memory not available.",
+    });
+  }
+
+  // 5) Sanitization breadth (detect over-broad regexes)
+  if (!config.sanitization?.enabled) {
+    checks.push({
+      category: "Sanitization Pattern Health",
+      item: "Pattern Health",
+      status: "warn",
+      message: "Sanitization disabled; breadth checks skipped",
+    });
+  } else {
+    const benignSamples = [
+      "The tokenizer splits text into tokens",
+      "Bearer of bad news",
+      "This is a password-protected file",
+      "The API key concept is important",
+    ];
+
+    const builtInResult = testPatternBreadth(SECRET_PATTERNS, benignSamples);
+    const extraPatterns = compileExtraPatterns(config.sanitization.extraPatterns);
+    const extraResult = testPatternBreadth(
+      extraPatterns.map((p) => ({ pattern: p, replacement: "[REDACTED_CUSTOM]" })),
+      benignSamples
+    );
+
+    const totalMatches = builtInResult.matches.length + extraResult.matches.length;
+    const totalTested = builtInResult.tested + extraResult.tested;
+    const falsePositiveRate = totalTested > 0 ? totalMatches / totalTested : 0;
+
+    checks.push({
+      category: "Sanitization Pattern Health",
+      item: "Pattern Health",
+      status: totalMatches > 0 ? "warn" : "pass",
+      message:
+        totalMatches > 0
+          ? `Potential broad patterns detected (${totalMatches} benign hits, ~${(falsePositiveRate * 100).toFixed(1)}% est. FP)`
+          : "All patterns passed benign breadth checks",
+      details: {
+        benignSamples,
+        builtInMatches: builtInResult.matches,
+        extraMatches: extraResult.matches,
+        falsePositiveRate,
+      },
+    });
+  }
+
+  return checks;
 }
 
 function nextOverallStatus(current: OverallStatus, status: CheckStatus): OverallStatus {
@@ -409,7 +758,7 @@ diary/
 # Ignore temporary files
 *.tmp
 `;
-      await fs.writeFile(path.join(cassDir, ".gitignore"), gitignore);
+      await atomicWrite(path.join(cassDir, ".gitignore"), gitignore);
     },
   };
 }
@@ -430,11 +779,10 @@ function createResetConfigFix(configPath: string): FixableIssue {
       if (exists) {
         const backupPath = `${configPath}.backup.${Date.now()}`;
         await fs.copyFile(expandPath(configPath), backupPath);
-        console.log(chalk.yellow(`  Backed up old config to: ${backupPath}`));
       }
       // Save default config
       await fs.mkdir(path.dirname(expandPath(configPath)), { recursive: true });
-      await fs.writeFile(expandPath(configPath), JSON.stringify(DEFAULT_CONFIG, null, 2));
+      await atomicWrite(expandPath(configPath), JSON.stringify(DEFAULT_CONFIG, null, 2));
     },
   };
 }
@@ -450,7 +798,7 @@ function createMissingBlockedLogFix(blockedPath: string): FixableIssue {
     severity: "warn",
     safety: "safe",
     fix: async () => {
-      await fs.writeFile(blockedPath, "");
+      await atomicWrite(blockedPath, "");
     },
   };
 }
@@ -458,15 +806,24 @@ function createMissingBlockedLogFix(blockedPath: string): FixableIssue {
 /**
  * Detect fixable issues from health checks.
  */
-export async function detectFixableIssues(): Promise<FixableIssue[]> {
+export async function detectFixableIssues(options: { configLoadError?: unknown } = {}): Promise<FixableIssue[]> {
   const issues: FixableIssue[] = [];
-  const config = await loadConfig();
 
   // Check global directory
   const globalDir = resolveGlobalDir();
   const globalDirExists = await fileExists(globalDir);
   if (!globalDirExists) {
     issues.push(createMissingGlobalDirFix(globalDir));
+  }
+
+  // Check config validity (only if config file exists)
+  const globalConfigPath = path.join(globalDir, "config.json");
+  const globalConfigExists = await fileExists(globalConfigPath);
+  if (globalDirExists && globalConfigExists) {
+    const validation = await validateJsonFile(globalConfigPath);
+    if (options.configLoadError || !validation.valid) {
+      issues.push(createResetConfigFix(globalConfigPath));
+    }
   }
 
   // Check global playbook
@@ -524,11 +881,11 @@ export async function applyFixes(
   issues: FixableIssue[],
   options: ApplyFixesOptions = {}
 ): Promise<FixResult[]> {
-  const { interactive = false, dryRun = false, force = false } = options;
+  const { interactive = false, dryRun = false, force = false, quiet = false } = options;
   const results: FixResult[] = [];
 
   if (issues.length === 0) {
-    console.log(chalk.green("No fixable issues found."));
+    if (!quiet) console.log(chalk.green("No fixable issues found."));
     return results;
   }
 
@@ -537,27 +894,30 @@ export async function applyFixes(
   const cautiousIssues = issues.filter((i) => i.safety === "cautious");
   const manualIssues = issues.filter((i) => i.safety === "manual");
 
-  console.log(chalk.bold(`\nFound ${issues.length} fixable issue(s):\n`));
+  if (!quiet) console.log(chalk.bold(`\nFound ${issues.length} fixable issue(s):\n`));
 
   // List all issues
-  issues.forEach((issue, i) => {
-    const safetyIcon =
-      issue.safety === "safe" ? "✅" : issue.safety === "cautious" ? "⚠️ " : "📝";
-    const severityColor = issue.severity === "fail" ? chalk.red : chalk.yellow;
-    console.log(
-      `${i + 1}. ${safetyIcon} ${severityColor(`[${issue.severity}]`)} ${issue.description}`
-    );
-  });
+  if (!quiet) {
+    issues.forEach((issue, i) => {
+      const safetyIcon = formatSafetyBadge(issue.safety);
+      const severityColor = issue.severity === "fail" ? chalk.red : chalk.yellow;
+      console.log(
+        `${i + 1}. ${safetyIcon} ${severityColor(`[${issue.severity}]`)} ${issue.description}`
+      );
+    });
+  }
 
   if (manualIssues.length > 0) {
-    console.log(chalk.cyan("\n📝 Manual fixes required (not auto-fixable):"));
-    for (const issue of manualIssues) {
-      console.log(chalk.cyan(`   - ${issue.description}`));
+    if (!quiet) {
+      console.log(chalk.cyan(`\n${iconPrefix("note")}Manual fixes required (not auto-fixable):`));
+      for (const issue of manualIssues) {
+        console.log(chalk.cyan(`   - ${issue.description}`));
+      }
     }
   }
 
   if (dryRun) {
-    console.log(chalk.yellow("\n[Dry run] No changes will be made."));
+    if (!quiet) console.log(chalk.yellow("\n[Dry run] No changes will be made."));
     return issues.map((i) => ({
       id: i.id,
       success: false,
@@ -571,7 +931,7 @@ export async function applyFixes(
   // Safe issues: apply unless interactive mode asks not to
   if (safeIssues.length > 0) {
     if (interactive) {
-      console.log(chalk.green(`\n✅ ${safeIssues.length} safe fix(es) available`));
+      if (!quiet) console.log(chalk.green(`\n${iconPrefix("check")}${safeIssues.length} safe fix(es) available`));
       const confirm = await promptConfirm("Apply safe fixes?");
       if (confirm) {
         toFix.push(...safeIssues);
@@ -583,9 +943,11 @@ export async function applyFixes(
 
   // Cautious issues: require confirmation unless --force
   if (cautiousIssues.length > 0) {
-    console.log(
-      chalk.yellow(`\n⚠️  ${cautiousIssues.length} cautious fix(es) available (may modify data)`)
-    );
+    if (!quiet) {
+      console.log(
+        chalk.yellow(`\n${iconPrefix("warning")}${cautiousIssues.length} cautious fix(es) available (may modify data)`)
+      );
+    }
     if (force) {
       toFix.push(...cautiousIssues);
     } else if (interactive) {
@@ -594,16 +956,18 @@ export async function applyFixes(
         toFix.push(...cautiousIssues);
       }
     } else {
-      console.log(chalk.yellow("   Use --fix --force to apply cautious fixes non-interactively"));
+      if (!quiet) {
+        console.log(chalk.yellow("   Use --fix --force to apply cautious fixes non-interactively"));
+      }
     }
   }
 
   if (toFix.length === 0) {
-    console.log(chalk.yellow("\nNo fixes will be applied."));
+    if (!quiet) console.log(chalk.yellow("\nNo fixes will be applied."));
     return results;
   }
 
-  console.log(chalk.bold(`\nApplying ${toFix.length} fix(es)...\n`));
+  if (!quiet) console.log(chalk.bold(`\nApplying ${toFix.length} fix(es)...\n`));
 
   // Apply fixes
   for (const issue of toFix) {
@@ -611,19 +975,25 @@ export async function applyFixes(
     try {
       checkAbort();
     } catch {
-      console.log(chalk.yellow("\nOperation cancelled."));
+      if (!quiet) console.log(chalk.yellow("\nOperation cancelled."));
       break;
     }
 
     try {
-      console.log(`Fixing: ${issue.description}...`);
-      await issue.fix();
+      if (!quiet) console.log(`Fixing: ${issue.description}...`);
+      const originalLog = console.log;
+      if (quiet) console.log = () => {};
+      try {
+        await issue.fix();
+      } finally {
+        console.log = originalLog;
+      }
       results.push({
         id: issue.id,
         success: true,
         message: "Fixed successfully",
       });
-      console.log(chalk.green("  ✓ Fixed"));
+      if (!quiet) console.log(chalk.green("  ✓ Fixed"));
     } catch (err: any) {
       if (isPermissionError(err)) {
         // Handle permission errors gracefully
@@ -634,7 +1004,7 @@ export async function applyFixes(
         success: false,
         message: err.message,
       });
-      console.log(chalk.red(`  ✗ Failed: ${err.message}`));
+      if (!quiet) console.log(chalk.red(`  ✗ Failed: ${err.message}`));
     }
   }
 
@@ -642,10 +1012,12 @@ export async function applyFixes(
   const succeeded = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;
 
-  console.log(chalk.bold("\n--- Fix Summary ---"));
-  console.log(chalk.green(`✓ ${succeeded} fix(es) applied successfully`));
-  if (failed > 0) {
-    console.log(chalk.red(`✗ ${failed} fix(es) failed`));
+  if (!quiet) {
+    console.log(chalk.bold("\n--- Fix Summary ---"));
+    console.log(chalk.green(`✓ ${succeeded} fix(es) applied successfully`));
+    if (failed > 0) {
+      console.log(chalk.red(`✗ ${failed} fix(es) failed`));
+    }
   }
 
   return results;
@@ -659,203 +1031,166 @@ export async function doctorCommand(options: {
   interactive?: boolean;
   selfTest?: boolean;
 }): Promise<void> {
-  const config = await loadConfig();
-  const checks: Array<{ category: string; status: CheckStatus; message: string; details?: unknown }> = [];
-  const interactive = options.interactive !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  const force = Boolean(options.force);
-  const dryRun = Boolean(options.dryRun);
-  const selfTest = Boolean(options.selfTest);
+  try {
+    let config: Config = DEFAULT_CONFIG;
+    let configLoadError: unknown | undefined;
+    try {
+      config = await loadConfig();
+    } catch (err) {
+      configLoadError = err;
+      config = DEFAULT_CONFIG;
+    }
+    const wantsJson = Boolean(options.json);
+    const interactive =
+      !wantsJson && options.interactive !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    const force = Boolean(options.force);
+    const dryRun = Boolean(options.dryRun);
+    const selfTest = Boolean(options.selfTest);
+    const fix = Boolean(options.fix);
 
-  // 1) cass integration
-  const cassOk = cassAvailable(config.cassPath);
-  checks.push({
-    category: "Cass Integration",
-    status: cassOk ? "pass" : "fail",
-    message: cassOk ? "cass CLI found" : "cass CLI not found",
-    details: cassOk ? await cassStats(config.cassPath) : undefined,
-  });
+    const generatedAt = new Date().toISOString();
+    const version = getVersion();
 
-  // 2) Global Storage
-  const globalDir = resolveGlobalDir();
-  const globalPlaybookExists = await fileExists(path.join(globalDir, "playbook.yaml"));
-  const globalConfigExists = await fileExists(path.join(globalDir, "config.json"));
-  const globalDiaryExists = await fileExists(path.join(globalDir, "diary"));
-  
-  const missingGlobal: string[] = [];
-  if (!globalPlaybookExists) missingGlobal.push("playbook.yaml");
-  if (!globalConfigExists) missingGlobal.push("config.json");
-  if (!globalDiaryExists) missingGlobal.push("diary/");
+    let checks = await computeDoctorChecks(config, { configLoadError });
+    let overallStatus = computeOverallStatus(checks);
 
-  checks.push({
-    category: "Global Storage (~/.cass-memory)",
-    status: missingGlobal.length === 0 ? "pass" : "warn",
-    message: missingGlobal.length === 0 
-      ? "All global files found" 
-      : `Missing: ${missingGlobal.join(", ")}`,
-  });
+    let fixableIssues: FixableIssue[] = [];
+    if (wantsJson || fix || dryRun) {
+      fixableIssues = await detectFixableIssues({ configLoadError });
+    }
+    let fixableIssueSummaries = fixableIssues.map(summarizeFixableIssue);
+    const fixPlan = buildFixPlan(fixableIssueSummaries, { fix, dryRun, interactive, force });
 
-  // 3) LLM config
-  const hasApiKey = isLLMAvailable(config.provider) || !!config.apiKey;
-  checks.push({
-    category: "LLM Configuration",
-    status: hasApiKey ? "pass" : "fail",
-    message: `Provider: ${config.provider}, API Key: ${hasApiKey ? "Set" : "Missing"}`,
-  });
+    let fixResults: FixResult[] | undefined;
+    if (fix && !dryRun && overallStatus !== "healthy") {
+      fixResults = await applyFixes(fixableIssues, {
+        interactive,
+        dryRun: false,
+        force,
+        quiet: wantsJson,
+      });
 
-  // 4) Repo-level .cass/ structure (if in a git repo)
-  const cassDir = await resolveRepoDir();
-  if (cassDir) {
-    const repoPlaybookExists = await fileExists(path.join(cassDir, "playbook.yaml"));
-    const repoBlockedExists = await fileExists(path.join(cassDir, "blocked.log"));
+      // Re-load config after fixes (especially important if config was invalid)
+      try {
+        config = await loadConfig();
+        configLoadError = undefined;
+      } catch (err) {
+        configLoadError = err;
+        config = DEFAULT_CONFIG;
+      }
 
-    const hasStructure = repoPlaybookExists || repoBlockedExists;
-    const isComplete = repoPlaybookExists && repoBlockedExists;
-
-    let status: CheckStatus = "pass";
-    let message = "";
-
-    if (!hasStructure) {
-      status = "warn";
-      message = `Not initialized. Run \`${getCliName()} init --repo\` to enable project-level memory.`;
-    } else if (!isComplete) {
-      status = "warn";
-      const missing: string[] = [];
-      if (!repoPlaybookExists) missing.push("playbook.yaml");
-      if (!repoBlockedExists) missing.push("blocked.log");
-      message = `Partial setup. Missing: ${missing.join(", ")}. Run \`${getCliName()} init --repo --force\` to complete.`;
-    } else {
-      message = "Complete (.cass/playbook.yaml and .cass/blocked.log present)";
+      // Recompute status after fixes.
+      checks = await computeDoctorChecks(config, { configLoadError });
+      overallStatus = computeOverallStatus(checks);
+      if (wantsJson) {
+        fixableIssues = await detectFixableIssues({ configLoadError });
+        fixableIssueSummaries = fixableIssues.map(summarizeFixableIssue);
+      }
     }
 
-    checks.push({
-      category: "Repo .cass/ Structure",
-      status,
-      message,
-      details: {
-        cassDir,
-        playbookExists: repoPlaybookExists,
-        blockedLogExists: repoBlockedExists,
-      },
+    const recommendedActions = buildRecommendedActions({
+      overallStatus,
+      checks,
+      fixableIssues: fixableIssueSummaries,
+      options: { fix, dryRun, force },
     });
-  } else {
-    checks.push({
-      category: "Repo .cass/ Structure",
-      status: "warn",
-      message: "Not in a git repository. Repo-level memory not available.",
-    });
-  }
 
-  // 5) Sanitization breadth (detect over-broad regexes)
-  if (!config.sanitization?.enabled) {
-    checks.push({
-      category: "Sanitization Pattern Health",
-      status: "warn",
-      message: "Sanitization disabled; breadth checks skipped",
-    });
-  } else {
-    const benignSamples = [
-      "The tokenizer splits text into tokens",
-      "Bearer of bad news",
-      "This is a password-protected file",
-      "The API key concept is important",
-    ];
-
-    const builtInResult = testPatternBreadth(SECRET_PATTERNS, benignSamples);
-    const extraPatterns = compileExtraPatterns(config.sanitization.extraPatterns);
-    const extraResult = testPatternBreadth(
-      extraPatterns.map((p) => ({ pattern: p, replacement: "[REDACTED_CUSTOM]" })),
-      benignSamples
-    );
-
-    const totalMatches = builtInResult.matches.length + extraResult.matches.length;
-    const totalTested = builtInResult.tested + extraResult.tested;
-    const falsePositiveRate = totalTested > 0 ? totalMatches / totalTested : 0;
-
-    checks.push({
-      category: "Sanitization Pattern Health",
-      status: totalMatches > 0 ? "warn" : "pass",
-      message:
-        totalMatches > 0
-          ? `Potential broad patterns detected (${totalMatches} benign hits, ~${(falsePositiveRate * 100).toFixed(1)}% est. FP)`
-          : "All patterns passed benign breadth checks",
-      details: {
-        benignSamples,
-        builtInMatches: builtInResult.matches,
-        extraMatches: extraResult.matches,
-        falsePositiveRate,
-      },
-    });
-  }
-
-  let overallStatus: OverallStatus = "healthy";
-  for (const check of checks) {
-    overallStatus = nextOverallStatus(overallStatus, check.status);
-  }
-
-  if (options.json) {
-    const payload: any = { checks };
-    if (selfTest) {
-      payload.selfTest = await runSelfTest(config);
-    }
-    console.log(JSON.stringify(payload, null, 2));
-    return;
-  }
-
-  console.log(chalk.bold("\n🏥 System Health Check\n"));
-  for (const check of checks) {
-    console.log(`${statusIcon(check.status)} ${chalk.bold(check.category)}: ${check.message}`);
-
-    if (check.category === "Sanitization Pattern Health" && check.details && (check.details as any).builtInMatches) {
-      const details = check.details as {
-        builtInMatches: PatternMatch[];
-        extraMatches: PatternMatch[];
+    if (wantsJson) {
+      const payload: any = {
+        version,
+        generatedAt,
+        overallStatus,
+        checks,
+        fixableIssues: fixableIssueSummaries,
+        recommendedActions,
       };
-      const allMatches = [...(details.builtInMatches || []), ...(details.extraMatches || [])];
-      if (allMatches.length > 0) {
-        console.log(chalk.yellow("  Potentially broad patterns:"));
-        for (const m of allMatches) {
-          console.log(chalk.yellow(`  - ${m.pattern} matched "${m.sample}" (replacement: ${m.replacement})`));
-          if (m.suggestion) {
-            console.log(chalk.yellow(`    Suggestion: ${m.suggestion}`));
+      if (fix || dryRun) {
+        payload.fixPlan = fixPlan;
+      }
+      if (fixResults) {
+        payload.fixResults = fixResults;
+      }
+      if (selfTest) {
+        payload.selfTest = await runSelfTest(config);
+      }
+      printJson(payload);
+      return;
+    }
+
+    console.log(chalk.bold(`\n${iconPrefix("hospital")}System Health Check\n`));
+    for (const check of checks) {
+      const label = `${check.category}: ${check.item}`;
+      console.log(`${formatCheckStatusBadge(check.status)} ${chalk.bold(label)}: ${check.message}`);
+
+      if (
+        check.category === "Sanitization" &&
+        check.item === "Pattern Health" &&
+        check.details &&
+        (check.details as any).builtInMatches
+      ) {
+        const details = check.details as {
+          builtInMatches: PatternMatch[];
+          extraMatches: PatternMatch[];
+        };
+        const allMatches = [...(details.builtInMatches || []), ...(details.extraMatches || [])];
+        if (allMatches.length > 0) {
+          console.log(chalk.yellow("  Potentially broad patterns:"));
+          for (const m of allMatches) {
+            console.log(chalk.yellow(`  - ${m.pattern} matched "${m.sample}" (replacement: ${m.replacement})`));
+            if (m.suggestion) {
+              console.log(chalk.yellow(`    Suggestion: ${m.suggestion}`));
+            }
           }
         }
       }
     }
-  }
 
-  console.log("");
-  if (overallStatus === "healthy") console.log(chalk.green("System is healthy ready to rock! 🚀"));
-  else if (overallStatus === "degraded") console.log(chalk.yellow("System is running in degraded mode."));
-  else console.log(chalk.red("System has critical issues."));
-
-  // Fix plan / apply
-  if (dryRun) {
-    console.log(chalk.bold("\n🔧 Fix Plan (Dry Run)\n"));
-    const issues = await detectFixableIssues();
-    await applyFixes(issues, { interactive: false, dryRun: true, force });
-  } else if (options.fix && overallStatus !== "healthy") {
-    console.log(chalk.bold("\n🔧 Auto-Fix Mode\n"));
-    const issues = await detectFixableIssues();
-    if (issues.length > 0) {
-      await applyFixes(issues, { interactive, dryRun: false, force });
-      console.log(chalk.cyan("\nRe-running health check to verify fixes...\n"));
-      // Run doctor again to show updated status (non-recursive)
-      await doctorCommand({ json: false, fix: false, selfTest });
-      return;
+    console.log("");
+    if (overallStatus === "healthy") {
+      const rocketSuffix = icon("rocket") ? ` ${icon("rocket")}` : "";
+      console.log(chalk.green(`System is healthy ready to rock!${rocketSuffix}`));
+    } else if (overallStatus === "degraded") {
+      console.log(chalk.yellow("System is running in degraded mode."));
     } else {
-      console.log(chalk.yellow("No auto-fixable issues detected."));
-      console.log(chalk.cyan("Some issues may require manual intervention."));
+      console.log(chalk.red("System has critical issues."));
     }
-  } else if (options.fix && overallStatus === "healthy") {
-    console.log(chalk.green("\nSystem is healthy, no fixes needed."));
-  }
-  
-  // 6) Run Self-Test (End-to-End Smoke Tests)
-  if (selfTest) {
-    console.log(chalk.bold("\n🧪 Running Self-Test...\n"));
-    const selfTests = await runSelfTest(config);
-    for (const test of selfTests) {
-      console.log(`${statusIcon(test.status)} ${test.item}: ${test.message}`);
+
+    // Fix plan / apply
+    if (dryRun) {
+      console.log(chalk.bold(`\n${iconPrefix("fix")}Fix Plan (Dry Run)\n`));
+      const issues = await detectFixableIssues({ configLoadError });
+      await applyFixes(issues, { interactive: false, dryRun: true, force });
+    } else if (fix && overallStatus !== "healthy") {
+      console.log(chalk.bold(`\n${iconPrefix("fix")}Auto-Fix Mode\n`));
+      const issues = await detectFixableIssues({ configLoadError });
+      if (issues.length > 0) {
+        await applyFixes(issues, { interactive, dryRun: false, force });
+        console.log(chalk.cyan("\nRe-running health check to verify fixes...\n"));
+        // Run doctor again to show updated status (non-recursive)
+        await doctorCommand({ json: false, fix: false, selfTest });
+        return;
+      } else {
+        console.log(chalk.yellow("No auto-fixable issues detected."));
+        console.log(chalk.cyan("Some issues may require manual intervention."));
+      }
+    } else if (fix && overallStatus === "healthy") {
+      console.log(chalk.green("\nSystem is healthy, no fixes needed."));
     }
+
+    // 6) Run Self-Test (End-to-End Smoke Tests)
+    if (selfTest) {
+      console.log(chalk.bold(`\n${iconPrefix("test")}Running Self-Test...\n`));
+      const selfTests = await runSelfTest(config);
+      for (const test of selfTests) {
+        console.log(`${formatCheckStatusBadge(test.status)} ${test.item}: ${test.message}`);
+      }
+    }
+  } catch (err) {
+    if (options.json) {
+      printJsonError(err);
+    } else {
+      logError(err instanceof Error ? err.message : String(err));
+    }
+    process.exitCode = 1;
   }
 }

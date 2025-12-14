@@ -8,6 +8,7 @@ import { cassExport, cassAvailable } from "../cass.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
+import { iconPrefix } from "../output.js";
 
 export interface DiaryCommandOptions {
   /** Output format: json or human-readable */
@@ -99,7 +100,7 @@ export async function handleDiaryOutput(
   }
 
   // Human-readable output
-  console.log(chalk.bold.blue(`\n📔 Diary: ${diary.id}\n`));
+  console.log(chalk.bold.blue(`\n${iconPrefix("diary")}Diary: ${diary.id}\n`));
   console.log(chalk.dim(`Session: ${diary.sessionPath}`));
   console.log(chalk.dim(`Agent: ${diary.agent}`));
   console.log(chalk.dim(`Workspace: ${diary.workspace}`));
@@ -110,31 +111,31 @@ export async function handleDiaryOutput(
   console.log(`Status: ${statusColor(diary.status)}\n`);
 
   if (diary.accomplishments.length > 0) {
-    console.log(chalk.green.bold("✅ Accomplishments:"));
+    console.log(chalk.green.bold(`${iconPrefix("check")}Accomplishments:`));
     diary.accomplishments.forEach(a => console.log(`  • ${a}`));
     console.log();
   }
 
   if (diary.decisions.length > 0) {
-    console.log(chalk.blue.bold("🎯 Decisions:"));
+    console.log(chalk.blue.bold(`${iconPrefix("target")}Decisions:`));
     diary.decisions.forEach(d => console.log(`  • ${d}`));
     console.log();
   }
 
   if (diary.challenges.length > 0) {
-    console.log(chalk.yellow.bold("⚠️  Challenges:"));
+    console.log(chalk.yellow.bold(`${iconPrefix("warning")}Challenges:`));
     diary.challenges.forEach(c => console.log(`  • ${c}`));
     console.log();
   }
 
   if (diary.keyLearnings.length > 0) {
-    console.log(chalk.magenta.bold("💡 Key Learnings:"));
+    console.log(chalk.magenta.bold(`${iconPrefix("tip")}Key Learnings:`));
     diary.keyLearnings.forEach(l => console.log(`  • ${l}`));
     console.log();
   }
 
   if (diary.preferences.length > 0) {
-    console.log(chalk.cyan.bold("🎨 Preferences:"));
+    console.log(chalk.cyan.bold(`${iconPrefix("palette")}Preferences:`));
     diary.preferences.forEach(p => console.log(`  • ${p}`));
     console.log();
   }
@@ -152,6 +153,6 @@ export async function handleDiaryOutput(
 
   // Note about saving
   if (!options.save && config.diaryDir) {
-    console.log(chalk.dim(`\n📁 Saved to: ${config.diaryDir}/${diary.id}.json`));
+    console.log(chalk.dim(`\n${iconPrefix("folder")}Saved to: ${config.diaryDir}/${diary.id}.json`));
   }
 }

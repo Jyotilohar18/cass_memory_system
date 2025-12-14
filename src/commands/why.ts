@@ -5,9 +5,8 @@
  * source sessions, evidence quotes, and feedback history.
  */
 import { loadConfig } from "../config.js";
+import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
 import { loadMergedPlaybook, findBullet } from "../playbook.js";
-import { loadAllDiaries, findDiaryBySession } from "../diary.js";
-import { safeCassSearch } from "../cass.js";
 import { getEffectiveScore } from "../scoring.js";
 import { truncate } from "../utils.js";
 import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
@@ -106,12 +105,16 @@ async function buildWhyResult(
   for (const sessionPath of sourceSessions.slice(0, verbose ? 10 : 5)) {
     // Only look up diary for actual file paths, not synthetic identifiers
     let diary: DiaryEntry | null = null;
-    if (sessionPath.includes("/") || sessionPath.endsWith(".jsonl")) {
-      try {
-        diary = await findDiaryBySession(sessionPath, config);
-      } catch {
-        // Ignore lookup errors for invalid paths
+    if (sessionPath) {
+      if (sessionPath.endsWith(".json") || sessionPath.endsWith(".jsonl")) {
+        // It's a direct file path to a diary
+        diary = await loadDiary(sessionPath, config);
+      } else {
+        // It's a session path (e.g. from IDE), try to find corresponding diary
+        diary = await findDiaryBySession(sessionPath, config.diaryDir);
       }
+    } else {
+      // Find latest diary
     }
     sessionDetails.push({
       path: sessionPath,

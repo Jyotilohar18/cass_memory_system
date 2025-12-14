@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
+import chalk from "chalk";
 import { getCliName, getVersion } from "./utils.js";
 import { initCommand } from "./commands/init.js";
 import { contextCommand } from "./commands/context.js";
@@ -30,7 +31,7 @@ const toFloat = (value: string) => parseFloat(value);
 
 program
   .name(getCliName())
-  .description("Agent-agnostic reflection and memory system")
+  .description("Procedural memory for AI coding agents")
   .version(getVersion());
 
 // --- Init ---
@@ -319,6 +320,35 @@ function hasJsonFlag(): boolean {
   return process.argv.includes("--json") || process.argv.includes("-j");
 }
 
+function formatMainHelpBanner(cli: string): string {
+  return [
+    "Start here (agents):",
+    `  ${cli} context "<task>" --json`,
+    "",
+    "Then:",
+    `  ${cli} quickstart --json`,
+  ].join("\n");
+}
+
+function formatMainHelpEpilog(cli: string): string {
+  return `
+
+Examples:
+  ${cli} context "fix the authentication timeout bug" --json
+  ${cli} init
+  ${cli} doctor --fix
+  ${cli} playbook list
+  ${cli} reflect --days 7 --json
+
+Command groups:
+  Agent workflow: context, quickstart, similar
+  Operator/maintenance: init, doctor, reflect, playbook, stats, project, privacy, starters
+  Advanced/rare: serve, outcome, outcome-apply, audit, validate
+
+Tip: ${cli} <command> --help
+`.trimEnd();
+}
+
 /**
  * Format error for CLI output.
  * In JSON mode: structured JSON to stdout with exit code.
@@ -339,11 +369,19 @@ function handleError(error: unknown): never {
     }));
   } else {
     // Human mode: colored error to stderr
-    console.error(`\x1b[31m${cliName}: error:\x1b[0m ${message}`);
+    console.error(`${chalk.red(`${cliName}: error:`)} ${message}`);
   }
 
   process.exit(1);
 }
+
+program.showSuggestionAfterError(true);
+if (!hasJsonFlag()) {
+  program.showHelpAfterError("(add --help for additional information)");
+}
+
+program.addHelpText("before", ({ command }) => `${formatMainHelpBanner(command.name())}\n`);
+program.addHelpText("after", ({ command }) => `${formatMainHelpEpilog(command.name())}\n`);
 
 // Use parseAsync for proper async error handling
 program.parseAsync().catch(handleError);

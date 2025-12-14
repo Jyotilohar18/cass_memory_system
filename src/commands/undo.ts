@@ -10,6 +10,7 @@ import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { PlaybookBullet, Config, FeedbackEvent } from "../types.js";
 import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists } from "../utils.js";
+import { withLock } from "../lock.js";
 import chalk from "chalk";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -166,224 +167,210 @@ export async function undoCommand(
   }
 
   const { playbook, path: playbookPath, location: loc } = location;
-  const bullet = findBullet(playbook, bulletId)!;
-  const preview = truncate(bullet.content.trim().replace(/\s+/g, " "), 100);
 
-  // Handle --dry-run: show what would happen without making changes
-  if (flags.dryRun) {
-    const events = bullet.feedbackEvents || [];
-    const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+  // Use withLock for consistent concurrent access safety
+  await withLock(playbookPath, async () => {
+    // Reload inside lock to prevent race conditions
+    const currentPlaybook = await loadPlaybook(playbookPath);
+    const bullet = findBullet(currentPlaybook, bulletId);
 
-    let actionType: string;
-    let wouldChange: string;
-    let applyCommand: string;
-
-    if (flags.hard) {
-      actionType = "hard-delete";
-      wouldChange = "Bullet would be permanently removed from playbook";
-      applyCommand = `${cli} undo ${bulletId} --hard --yes`;
-    } else if (flags.feedback) {
-      if (!lastEvent) {
-        const error = { error: `No feedback events to undo for bullet ${bulletId}` };
-        if (flags.json) {
-          console.log(JSON.stringify(error, null, 2));
-        } else {
-          console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
-        }
-        process.exit(1);
-      }
-      actionType = "undo-feedback";
-      wouldChange = `Would remove last ${lastEvent.type} feedback from ${lastEvent.timestamp?.slice(0, 10) || "unknown"}`;
-      applyCommand = `${cli} undo ${bulletId} --feedback`;
-    } else {
-      if (!bullet.deprecated) {
-        const error = {
-          error: `Bullet ${bulletId} is not deprecated`,
-          hint: "Use --feedback to undo the last feedback event, or --hard to delete"
-        };
-        if (flags.json) {
-          console.log(JSON.stringify(error, null, 2));
-        } else {
-          console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
-          console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
-        }
-        process.exit(1);
-      }
-      actionType = "un-deprecate";
-      wouldChange = "Bullet would be restored to active state (deprecated → active, maturity reset to candidate if needed)";
-      applyCommand = `${cli} undo ${bulletId}`;
+    if (!bullet) {
+      // Just throw - the CLI error handler will handle printing and exit code
+      throw new Error(`Bullet ${bulletId} not found in ${playbookPath} during write lock.`);
     }
 
-    const plan = {
-      dryRun: true,
-      action: actionType,
-      bulletId,
-      path: playbookPath,
-      location: loc,
-      preview,
-      category: bullet.category,
-      before: {
+    const preview = truncate(bullet.content.trim().replace(/\s+/g, " "), 100);
+
+    // Handle --dry-run: show what would happen without making changes
+    if (flags.dryRun) {
+      const events = bullet.feedbackEvents || [];
+      const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+
+      let actionType: string;
+      let wouldChange: string;
+      let applyCommand: string;
+
+      if (flags.hard) {
+        actionType = "hard-delete";
+        wouldChange = "Bullet would be permanently removed from playbook";
+        applyCommand = `${cli} undo ${bulletId} --hard --yes`;
+      } else if (flags.feedback) {
+        if (!lastEvent) {
+          const error = { error: `No feedback events to undo for bullet ${bulletId}` };
+          if (flags.json) {
+            console.log(JSON.stringify(error, null, 2));
+          } else {
+            console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
+          }
+          throw new Error("No feedback events to undo for this bullet.");
+        }
+        actionType = "undo-feedback";
+        wouldChange = `Would remove last ${lastEvent.type} feedback from ${lastEvent.timestamp?.slice(0, 10) || "unknown"}`;
+        applyCommand = `${cli} undo ${bulletId} --feedback`;
+      } else {
+        if (!bullet.deprecated) {
+          const error = {
+            error: `Bullet ${bulletId} is not deprecated`,
+            hint: "Use --feedback to undo the last feedback event, or --hard to delete"
+          };
+          if (flags.json) {
+            console.log(JSON.stringify(error, null, 2));
+          } else {
+            console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
+            console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
+          }
+          throw new Error("Bullet is not deprecated. Use --feedback to undo the last feedback event, or --hard to delete.");
+        }
+        actionType = "un-deprecate";
+        wouldChange = "Bullet would be restored to active state (deprecated → active, maturity reset to candidate if needed)";
+        applyCommand = `${cli} undo ${bulletId}`;
+      }
+
+      const plan = {
+        dryRun: true,
+        action: actionType,
+        bulletId,
+        path: playbookPath,
+        location: loc,
+        preview,
+        category: bullet.category,
+        before: {
+          deprecated: bullet.deprecated,
+          state: bullet.state,
+          maturity: bullet.maturity,
+          helpfulCount: bullet.helpfulCount,
+          harmfulCount: bullet.harmfulCount,
+          ...(flags.feedback && lastEvent ? { lastFeedback: lastEvent } : {}),
+        },
+        wouldChange,
+        applyCommand,
+      };
+
+      if (flags.json) {
+        console.log(JSON.stringify({ success: true, plan }, null, 2));
+      } else {
+        console.log(chalk.bold.yellow("DRY RUN - No changes will be made"));
+        console.log(chalk.gray("─".repeat(50)));
+        console.log();
+        console.log(`Action: ${chalk.bold(actionType.toUpperCase())}`);
+        console.log(`Bullet ID: ${chalk.cyan(bulletId)}`);
+        console.log(`File: ${chalk.gray(playbookPath)} (${loc})`);
+        console.log(`Preview: ${chalk.cyan(`"${preview}"`)}`);
+        console.log(`Category: ${chalk.cyan(bullet.category)}`);
+        console.log(`Feedback: ${bullet.helpfulCount || 0}+ / ${bullet.harmfulCount || 0}-`);
+        console.log(`State: ${bullet.state}, Maturity: ${bullet.maturity}, Deprecated: ${bullet.deprecated}`);
+        if (flags.feedback && lastEvent) {
+          console.log(`Last feedback: ${chalk.yellow(lastEvent.type)} at ${lastEvent.timestamp?.slice(0, 10) || "unknown"}`);
+        }
+        console.log();
+        console.log(chalk.yellow(`Would: ${wouldChange}`));
+        console.log();
+        console.log(chalk.gray(`To apply: ${applyCommand}`));
+      }
+      return;
+    }
+
+    let result: UndoResult;
+
+    if (flags.hard) {
+      const confirmed = await confirmDangerousAction({
+        action: `Permanently delete bullet ${bulletId} (${loc} playbook)`,
+        details: [
+          `File: ${playbookPath}`,
+          `Preview: "${preview}"`,
+          `Tip: Use --yes to confirm in non-interactive mode`,
+        ],
+        confirmPhrase: "DELETE",
+        yes: flags.yes,
+        json: flags.json,
+      });
+
+      if (!confirmed) {
+        // Throw error to break out of lock safely
+        throw new Error("Confirmation required for --hard deletion. Use --yes to confirm in non-interactive mode.");
+      }
+
+      // Hard delete - remove the bullet entirely
+      const before = {
         deprecated: bullet.deprecated,
         state: bullet.state,
         maturity: bullet.maturity,
         helpfulCount: bullet.helpfulCount,
-        harmfulCount: bullet.harmfulCount,
-        ...(flags.feedback && lastEvent ? { lastFeedback: lastEvent } : {}),
-      },
-      wouldChange,
-      applyCommand,
-    };
+        harmfulCount: bullet.harmfulCount
+      };
+
+      const index = currentPlaybook.bullets.findIndex(b => b.id === bulletId);
+      currentPlaybook.bullets.splice(index, 1);
+      await savePlaybook(currentPlaybook, playbookPath);
+
+      result = {
+        success: true,
+        bulletId,
+        action: "hard-delete",
+        path: playbookPath,
+        preview,
+        before,
+        after: { deleted: true },
+        message: `Permanently deleted bullet ${bulletId} from ${loc} playbook`
+      };
+    } else if (flags.feedback) {
+      // Undo last feedback event
+      const { before, removedEvent } = undoLastFeedback(bullet);
+
+      if (!removedEvent) {
+        throw new Error(`No feedback events to undo for bullet ${bulletId}`);
+      }
+
+      await savePlaybook(currentPlaybook, playbookPath);
+
+      result = {
+        success: true,
+        bulletId,
+        action: "undo-feedback",
+        before,
+        after: {
+          helpfulCount: bullet.helpfulCount,
+          harmfulCount: bullet.harmfulCount,
+          feedbackEventsCount: (bullet.feedbackEvents || []).length
+        },
+        message: `Removed last ${removedEvent.type} feedback from ${bulletId}`
+      };
+    } else {
+      // Default: un-deprecate
+      if (!bullet.deprecated) {
+        throw new Error(`Bullet ${bulletId} is not deprecated. Use --feedback to undo the last feedback event, or --hard to delete.`);
+      }
+
+      const before = undeprecateBullet(bullet);
+
+      // Also remove from blocklist(s) so it doesn't get re-blocked on next load
+      await removeFromBlockedLog(bulletId, "~/.cass-memory/blocked.log");
+      if (repoDir) {
+        await removeFromBlockedLog(bulletId, path.join(repoDir, "blocked.log"));
+      }
+
+      await savePlaybook(currentPlaybook, playbookPath);
+
+      result = {
+        success: true,
+        bulletId,
+        action: "un-deprecate",
+        before,
+        after: {
+          deprecated: bullet.deprecated,
+          state: bullet.state,
+          maturity: bullet.maturity
+        },
+        message: `Restored bullet ${bulletId} from deprecated state`
+      };
+    }
 
     if (flags.json) {
-      console.log(JSON.stringify({ success: true, plan }, null, 2));
+      console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log(chalk.bold.yellow("DRY RUN - No changes will be made"));
-      console.log(chalk.gray("─".repeat(50)));
-      console.log();
-      console.log(`Action: ${chalk.bold(actionType.toUpperCase())}`);
-      console.log(`Bullet ID: ${chalk.cyan(bulletId)}`);
-      console.log(`File: ${chalk.gray(playbookPath)} (${loc})`);
-      console.log(`Preview: ${chalk.cyan(`"${preview}"`)}`);
-      console.log(`Category: ${chalk.cyan(bullet.category)}`);
-      console.log(`Feedback: ${bullet.helpfulCount || 0}+ / ${bullet.harmfulCount || 0}-`);
-      console.log(`State: ${bullet.state}, Maturity: ${bullet.maturity}, Deprecated: ${bullet.deprecated}`);
-      if (flags.feedback && lastEvent) {
-        console.log(`Last feedback: ${chalk.yellow(lastEvent.type)} at ${lastEvent.timestamp?.slice(0, 10) || "unknown"}`);
-      }
-      console.log();
-      console.log(chalk.yellow(`Would: ${wouldChange}`));
-      console.log();
-      console.log(chalk.gray(`To apply: ${applyCommand}`));
+      printUndoResult(result, bullet);
     }
-    return;
-  }
-
-  let result: UndoResult;
-
-  if (flags.hard) {
-    const confirmed = await confirmDangerousAction({
-      action: `Permanently delete bullet ${bulletId} (${loc} playbook)`,
-      details: [
-        `File: ${playbookPath}`,
-        `Preview: "${preview}"`,
-        `Tip: Use --yes to confirm in non-interactive mode`,
-      ],
-      confirmPhrase: "DELETE",
-      yes: flags.yes,
-      json: flags.json,
-    });
-
-    if (!confirmed) {
-      const error = {
-        error: "Confirmation required for --hard deletion",
-        hint: `${cli} undo ${bulletId} --hard --yes`,
-      };
-      if (flags.json) {
-        console.log(JSON.stringify(error, null, 2));
-      } else {
-        console.error(chalk.red("Refusing to permanently delete without confirmation."));
-        console.log(chalk.gray(`Re-run with: ${cli} undo ${bulletId} --hard --yes`));
-        console.log(chalk.gray("Or omit --hard to un-deprecate instead."));
-      }
-      process.exit(1);
-    }
-
-    // Hard delete - remove the bullet entirely
-    const before = {
-      deprecated: bullet.deprecated,
-      state: bullet.state,
-      maturity: bullet.maturity,
-      helpfulCount: bullet.helpfulCount,
-      harmfulCount: bullet.harmfulCount
-    };
-
-    const index = playbook.bullets.findIndex(b => b.id === bulletId);
-    playbook.bullets.splice(index, 1);
-    await savePlaybook(playbook, playbookPath);
-
-    result = {
-      success: true,
-      bulletId,
-      action: "hard-delete",
-      path: playbookPath,
-      preview,
-      before,
-      after: { deleted: true },
-      message: `Permanently deleted bullet ${bulletId} from ${loc} playbook`
-    };
-  } else if (flags.feedback) {
-    // Undo last feedback event
-    const { before, removedEvent } = undoLastFeedback(bullet);
-
-    if (!removedEvent) {
-      const error = { error: `No feedback events to undo for bullet ${bulletId}` };
-      if (flags.json) {
-        console.log(JSON.stringify(error, null, 2));
-      } else {
-        console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
-      }
-      process.exit(1);
-    }
-
-    await savePlaybook(playbook, playbookPath);
-
-    result = {
-      success: true,
-      bulletId,
-      action: "undo-feedback",
-      before,
-      after: {
-        helpfulCount: bullet.helpfulCount,
-        harmfulCount: bullet.harmfulCount,
-        feedbackEventsCount: (bullet.feedbackEvents || []).length
-      },
-      message: `Removed last ${removedEvent.type} feedback from ${bulletId}`
-    };
-  } else {
-    // Default: un-deprecate
-    if (!bullet.deprecated) {
-      const error = {
-        error: `Bullet ${bulletId} is not deprecated`,
-        hint: "Use --feedback to undo the last feedback event, or --hard to delete"
-      };
-      if (flags.json) {
-        console.log(JSON.stringify(error, null, 2));
-      } else {
-        console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
-        console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
-      }
-      process.exit(1);
-    }
-
-    const before = undeprecateBullet(bullet);
-
-    // Also remove from blocklist(s) so it doesn't get re-blocked on next load
-    await removeFromBlockedLog(bulletId, "~/.cass-memory/blocked.log");
-    if (repoDir) {
-      await removeFromBlockedLog(bulletId, path.join(repoDir, "blocked.log"));
-    }
-
-    await savePlaybook(playbook, playbookPath);
-
-    result = {
-      success: true,
-      bulletId,
-      action: "un-deprecate",
-      before,
-      after: {
-        deprecated: bullet.deprecated,
-        state: bullet.state,
-        maturity: bullet.maturity
-      },
-      message: `Restored bullet ${bulletId} from deprecated state`
-    };
-  }
-
-  if (flags.json) {
-    console.log(JSON.stringify(result, null, 2));
-  } else {
-    printUndoResult(result, bullet);
-  }
+  });
 }
 
 function printUndoResult(result: UndoResult, bullet?: PlaybookBullet): void {

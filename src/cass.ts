@@ -9,7 +9,7 @@ import {
   CassTimelineResult,
   Config
 } from "./types.js";
-import { log, error, warn, expandPath } from "./utils.js";
+import { log, error, expandPath } from "./utils.js";
 import { sanitize, compileExtraPatterns } from "./sanitize.js";
 import { loadConfig, getSanitizeConfig } from "./config.js";
 
@@ -33,6 +33,22 @@ export interface CassAvailabilityResult {
   canContinue: boolean;
   fallbackMode: CassFallbackMode;
   message: string;
+  resolvedCassPath?: string;
+}
+
+export type CassDegradedReason = "NOT_FOUND" | "INDEX_MISSING" | "TIMEOUT" | "OTHER";
+
+export interface CassDegradedInfo {
+  /** Whether cass-powered history is available for this operation. */
+  available: boolean;
+  reason: CassDegradedReason;
+  message: string;
+  suggestedFix?: string[];
+}
+
+export interface SafeCassSearchResult {
+  hits: CassHit[];
+  degraded?: CassDegradedInfo;
   resolvedCassPath?: string;
 }
 
@@ -110,11 +126,10 @@ export async function handleCassUnavailable(
   const candidates = Array.from(new Set([configuredPath, ...common])).map(expandPath);
 
   for (const candidate of candidates) {
-    if (cassAvailable(candidate, { quiet: process.env.CASS_SILENT_WARNINGS === "1" })) {
+    if (cassAvailable(candidate, { quiet: true })) {
       const message = candidate === configuredPath
         ? `cass available at ${candidate}`
         : `cass found at ${candidate}. Set CASS_PATH=${candidate} or update config.cassPath.`;
-      if (candidate !== configuredPath) warn(message);
       return {
         canContinue: true,
         fallbackMode: "none",
@@ -130,7 +145,6 @@ export async function handleCassUnavailable(
     "https://github.com/Dicklesworthstone/coding_agent_session_search",
     "Then set CASS_PATH or config.cassPath."
   ].join(" ");
-  warn(installMessage);
 
   return {
     canContinue: true,
@@ -214,7 +228,22 @@ export async function cassSearch(
       const firstArray = stdout.indexOf("[");
       const firstObject = stdout.indexOf("{");
       const start = [firstArray, firstObject].filter(i => i >= 0).sort((a, b) => a - b)[0];
+      
       if (start !== undefined) {
+        // Robustness: Try to find the *last* matching closing bracket to handle trailing garbage
+        const isArray = start === firstArray;
+        const lastIndex = stdout.lastIndexOf(isArray ? "]" : "}");
+        
+        if (lastIndex > start) {
+          const slice = stdout.substring(start, lastIndex + 1);
+          try {
+            return JSON.parse(slice);
+          } catch {
+            // Fall through to NDJSON fallback if precise slicing fails
+          }
+        }
+        
+        // Fallback: try slicing to end if precise matching failed
         const slice = stdout.substring(start);
         try {
           return JSON.parse(slice);
@@ -268,27 +297,99 @@ export async function cassSearch(
 
 // --- Safe Wrapper ---
 
-export async function safeCassSearch(
+function normalizeCassErrorMessage(err: unknown): string {
+  if (!err) return "Unknown error";
+  if (err instanceof Error) return err.message || err.name;
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function classifyCassSearchError(err: any, query: string): CassDegradedInfo {
+  const rawMessage = normalizeCassErrorMessage(err);
+  const msg = rawMessage.split("\n")[0]?.trim() || rawMessage;
+  const code = err?.code;
+  const lower = `${msg}`.toLowerCase();
+
+  if (code === CASS_EXIT_CODES.INDEX_MISSING || lower.includes("index missing") || lower.includes("needs index")) {
+    return {
+      available: false,
+      reason: "INDEX_MISSING",
+      message: "cass index is missing; history is disabled until indexed.",
+      suggestedFix: ["cass index", "cass health"],
+    };
+  }
+
+  if (
+    code === CASS_EXIT_CODES.TIMEOUT ||
+    code === "ETIMEDOUT" ||
+    err?.killed === true ||
+    lower.includes("timeout") ||
+    lower.includes("timed out")
+  ) {
+    return {
+      available: false,
+      reason: "TIMEOUT",
+      message: "cass search timed out; history may be incomplete.",
+      suggestedFix: ["cass search \"<query>\" --robot --limit 5 --days 7", "cass health"],
+    };
+  }
+
+  if (code === CASS_EXIT_CODES.NOT_FOUND || code === "ENOENT") {
+    return {
+      available: false,
+      reason: "NOT_FOUND",
+      message: "cass binary not found; falling back to playbook-only mode (history disabled).",
+      suggestedFix: ["cargo install cass", "cass index"],
+    };
+  }
+
+  return {
+    available: false,
+    reason: "OTHER",
+    message: msg ? `cass search failed: ${msg}` : "cass search failed",
+    suggestedFix: ["cm doctor", "cass health"],
+  };
+}
+
+export async function safeCassSearchWithDegraded(
   query: string,
   options: CassSearchOptions = {},
   cassPath = "cass",
   config?: Config
-): Promise<CassHit[]> {
-  const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
-  const resolvedCassPath = expandPath(cassPath);
-
-  if (!force && !cassAvailable(resolvedCassPath, { quiet: true })) {
-    log("cass not available, skipping search", true);
-    return [];
-  }
-
+): Promise<SafeCassSearchResult> {
   if (!query || !query.trim()) {
-    return [];
+    return { hits: [] };
   }
+
+  const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
+  const availability = await handleCassUnavailable({ cassPath });
+
+  if (!force && availability.fallbackMode !== "none") {
+    return {
+      hits: [],
+      degraded: {
+        available: false,
+        reason: "NOT_FOUND",
+        message: availability.message,
+        suggestedFix: ["cargo install cass", "cass index"],
+      },
+    };
+  }
+
+  const expandedCassPath = expandPath(cassPath);
+  const resolvedCassPath = availability.resolvedCassPath || expandedCassPath;
+  const resolvedCassPathForOutput =
+    availability.resolvedCassPath && availability.resolvedCassPath !== expandedCassPath
+      ? availability.resolvedCassPath
+      : undefined;
 
   const activeConfig = config || await loadConfig();
   const sanitizeConfig = getSanitizeConfig(activeConfig);
-  
+
   // Pre-compile patterns for performance (avoid recompilation per hit)
   const compiledConfig = {
     ...sanitizeConfig,
@@ -297,48 +398,23 @@ export async function safeCassSearch(
 
   try {
     const hits = await cassSearch(query, options, resolvedCassPath);
-    
-    return hits.map(hit => ({
-      ...hit,
-      snippet: sanitize(hit.snippet, compiledConfig)
-    }));
+    return {
+      hits: hits.map(hit => ({
+        ...hit,
+        snippet: sanitize(hit.snippet, compiledConfig)
+      })),
+      resolvedCassPath: resolvedCassPathForOutput,
+    };
   } catch (err: any) {
-    const exitCode = err.code;
-    
-    if (exitCode === CASS_EXIT_CODES.INDEX_MISSING) {
-      log("Index missing, rebuilding...", true);
-      try {
-        await cassIndex(resolvedCassPath);
-        const hits = await cassSearch(query, options, resolvedCassPath);
-        
-        return hits.map(hit => ({
-          ...hit,
-          snippet: sanitize(hit.snippet, compiledConfig)
-        }));
-      } catch (retryErr) {
-        error(`Recovery failed: ${retryErr}`);
-        return [];
-      }
+    const degraded = classifyCassSearchError(err, query);
+    if (degraded.reason === "TIMEOUT") {
+      degraded.suggestedFix = [
+        `cass search "${query.replace(/"/g, '\\"')}" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
+        "cass health",
+      ];
     }
-    
-    if (exitCode === CASS_EXIT_CODES.TIMEOUT) {
-      log("Search timed out, retrying with reduced limit...", true);
-      const reducedOptions = { ...options, limit: Math.max(1, Math.floor((options.limit || 10) / 2)) };
-      try {
-        const hits = await cassSearch(query, reducedOptions, resolvedCassPath);
-        
-        return hits.map(hit => ({
-          ...hit,
-          snippet: sanitize(hit.snippet, compiledConfig)
-        }));
-      } catch {
-        return [];
-      }
-    }
-    
-    error(`Cass search failed: ${err.message}`);
 
-    // Fallback: if force flag set, attempt a best-effort sync call and parse whatever stdout we get
+    // Best-effort fallback: if force flag set, attempt to parse whatever stdout we get.
     if (options.force) {
       try {
         const alt = spawnSync(resolvedCassPath, ["search", query, "--robot"], { encoding: "utf-8" });
@@ -346,17 +422,33 @@ export async function safeCassSearch(
         if (text.trim()) {
           const parsed = JSON.parse(text);
           const hitsArr = Array.isArray(parsed) ? parsed : [parsed];
-          return hitsArr.map((hit: any) => ({
-            ...CassHitSchema.parse(hit),
-            snippet: sanitize(hit.snippet, compiledConfig)
-          }));
+          return {
+            hits: hitsArr.map((hit: any) => ({
+              ...CassHitSchema.parse(hit),
+              snippet: sanitize(hit.snippet, compiledConfig)
+            })),
+            degraded,
+            resolvedCassPath: resolvedCassPathForOutput,
+          };
         }
       } catch (fallbackErr: any) {
-        error(`Cass search fallback failed: ${fallbackErr.message}`);
+        // Keep degraded info; return empty hits.
+        log(`cass search force fallback failed: ${fallbackErr?.message || String(fallbackErr)}`, true);
       }
     }
-    return [];
+
+    return { hits: [], degraded, resolvedCassPath: resolvedCassPathForOutput };
   }
+}
+
+export async function safeCassSearch(
+  query: string,
+  options: CassSearchOptions = {},
+  cassPath = "cass",
+  config?: Config
+): Promise<CassHit[]> {
+  const { hits } = await safeCassSearchWithDegraded(query, options, cassPath, config);
+  return hits;
 }
 
 // --- Export ---

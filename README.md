@@ -95,6 +95,25 @@ These comments are automatically parsed during reflection and update rule confid
 
 ---
 
+## MVP Scope (V1)
+
+V1 is intentionally narrow: **“context on demand”** with **zero setup** and **graceful degradation**.
+
+- **Core loop**: `cm context` → work → optional feedback (`cm mark`, inline comments) → `cm reflect`
+- **Local-first**: `~/.cass-memory/` + optional repo overrides in `.cass/`
+- **Safe-by-default**: secret sanitization, cross-agent enrichment is opt-in
+- **Agent integration**: optional MCP server via `cm serve` (`cm_context`, `cm_feedback`, `cm_outcome`)
+
+### V2+ (non-goals for MVP)
+
+These may exist behind flags, but V1 does not require them for “first value”:
+
+- Semantic/embedding-based ranking and other “smart” retrieval
+- Cross-agent learning beyond explicit opt-in
+- Team playbooks, cloud sync, analytics dashboard, IDE plugins, webhooks/API
+
+---
+
 ## Architecture Overview
 
 ### Three-Layer Memory

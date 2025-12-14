@@ -5,15 +5,18 @@ import {
   getEffectiveScore,
   isStale
 } from "../scoring.js";
-import { jaccardSimilarity } from "../utils.js";
+import { findSemanticDuplicates } from "../semantic.js";
+import { tokenize } from "../utils.js";
 import chalk from "chalk";
+import { iconPrefix } from "../output.js";
 
 export async function statsCommand(options: { json?: boolean }): Promise<void> {
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
   const bullets = playbook.bullets;
+  const activeBullets = getActiveBullets(playbook);
 
-  const distribution = analyzeScoreDistribution(getActiveBullets(playbook), config);
+  const distribution = analyzeScoreDistribution(activeBullets, config);
   const total = bullets.length;
 
   const byScope = countBy(bullets, (b) => b.scope ?? "unknown");
@@ -42,9 +45,29 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
     .map((b) => ({ id: b.id, content: b.content, helpfulCount: b.helpfulCount || 0 }));
 
   const atRisk = scores.filter((s) => s.score < 0).map((s) => s.bullet);
-  const stale = bullets.filter((b) => isStale(b, 90));
+  
+  // Use config-aware staleness check
+  const staleThresholdDays = config.scoring?.decayHalfLifeDays || 90;
+  const stale = bullets.filter((b) => isStale(b, staleThresholdDays));
 
-  const mergeCandidates = findMergeCandidates(bullets, 0.8, 5);
+  // Only check active bullets for merge candidates to improve performance and relevance
+  const mergeCandidates = findMergeCandidates(activeBullets, 0.8, 5);
+
+  let semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }> = [];
+  if (config.semanticSearchEnabled && config.embeddingModel !== "none") {
+    try {
+      const dupes = await findSemanticDuplicates(activeBullets, 0.85, {
+        model: config.embeddingModel,
+      });
+      semanticMergeCandidates = dupes.slice(0, 5).map((d) => ({
+        a: d.pair[0],
+        b: d.pair[1],
+        similarity: Number(d.similarity.toFixed(2)),
+      }));
+    } catch {
+      semanticMergeCandidates = [];
+    }
+  }
 
   const stats = {
     total,
@@ -56,7 +79,8 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
     mostHelpful,
     atRiskCount: atRisk.length,
     staleCount: stale.length,
-    mergeCandidates
+    mergeCandidates,
+    semanticMergeCandidates
   };
 
   if (options.json) {
@@ -64,7 +88,7 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
     return;
   }
 
-  printHumanStats(stats);
+  printHumanStats(stats, staleThresholdDays);
 }
 
 function countBy<T>(items: T[], keyFn: (item: T) => string): Record<string, number> {
@@ -80,14 +104,37 @@ function findMergeCandidates(
   threshold: number,
   limit: number
 ): Array<{ a: string; b: string; similarity: number }> {
+  // Pre-tokenize to avoid O(N^2) tokenization overhead
+  const tokenized = bullets.map(b => ({
+    id: b.id,
+    tokens: new Set(tokenize(b.content))
+  }));
+
   const pairs: Array<{ a: string; b: string; similarity: number }> = [];
-  for (let i = 0; i < bullets.length; i++) {
-    for (let j = i + 1; j < bullets.length; j++) {
-      const sim = jaccardSimilarity(bullets[i].content, bullets[j].content);
+  
+  // Cap comparisons to prevent hanging on huge playbooks
+  // Comparing top 1000 bullets = 500k checks, manageable with pre-tokenization
+  const maxScan = Math.min(tokenized.length, 1000); 
+
+  for (let i = 0; i < maxScan; i++) {
+    for (let j = i + 1; j < maxScan; j++) {
+      const tA = tokenized[i].tokens;
+      const tB = tokenized[j].tokens;
+      
+      if (tA.size === 0 || tB.size === 0) continue;
+      
+      let intersection = 0;
+      for (const t of tA) {
+        if (tB.has(t)) intersection++;
+      }
+      
+      const union = tA.size + tB.size - intersection;
+      const sim = intersection / union;
+
       if (sim >= threshold) {
         pairs.push({
-          a: bullets[i].id,
-          b: bullets[j].id,
+          a: tokenized[i].id,
+          b: tokenized[j].id,
           similarity: Number(sim.toFixed(2))
         });
       }
@@ -109,8 +156,9 @@ function printHumanStats(stats: {
   atRiskCount: number;
   staleCount: number;
   mergeCandidates: Array<{ a: string; b: string; similarity: number }>;
-}) {
-  console.log(chalk.bold("\n📊 Playbook Health Dashboard"));
+  semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }>;
+}, staleThresholdDays: number) {
+  console.log(chalk.bold(`\n${iconPrefix("chart")}Playbook Health Dashboard`));
   console.log(`Total Bullets: ${stats.total}`);
 
   console.log(chalk.bold("\nBy Scope:"));
@@ -129,31 +177,38 @@ function printHumanStats(stats: {
   }
 
   console.log(chalk.bold("\nScore Distribution:"));
-  console.log(`  🌟 Excellent (>10): ${stats.scoreDistribution.excellent}`);
-  console.log(`  ✅ Good (5-10):    ${stats.scoreDistribution.good}`);
-  console.log(`  ⚪ Neutral (0-5):  ${stats.scoreDistribution.neutral}`);
-  console.log(`  ⚠️  At Risk (<0):   ${stats.scoreDistribution.atRisk}`);
+  console.log(`  ${iconPrefix("star")}Excellent (>10): ${stats.scoreDistribution.excellent}`);
+  console.log(`  ${iconPrefix("check")}Good (5-10):    ${stats.scoreDistribution.good}`);
+  console.log(`  ${iconPrefix("neutral")}Neutral (0-5):  ${stats.scoreDistribution.neutral}`);
+  console.log(`  ${iconPrefix("warning")}At Risk (<0):   ${stats.scoreDistribution.atRisk}`);
 
   if (stats.topPerformers.length > 0) {
-    console.log(chalk.bold("\n🏆 Top Performers (effective score):"));
+    console.log(chalk.bold(`\n${iconPrefix("trophy")}Top Performers (effective score):`));
     stats.topPerformers.forEach((b, i) => {
       console.log(`  ${i + 1}. [${b.id}] ${b.content.slice(0, 60)}... (${b.score.toFixed(1)})`);
     });
   }
 
   if (stats.mostHelpful.length > 0) {
-    console.log(chalk.bold("\n👍 Most Helpful (feedback count):"));
+    console.log(chalk.bold(`\n${iconPrefix("thumbsUp")}Most Helpful (feedback count):`));
     stats.mostHelpful.forEach((b, i) => {
       console.log(`  ${i + 1}. [${b.id}] ${b.content.slice(0, 60)}... (${b.helpfulCount})`);
     });
   }
 
-  console.log(chalk.bold(`\n⚠️  At Risk: ${stats.atRiskCount}`));
-  console.log(chalk.bold(`🕐 Stale (90d+): ${stats.staleCount}`));
+  console.log(chalk.bold(`\n${iconPrefix("warning")}At Risk: ${stats.atRiskCount}`));
+  console.log(chalk.bold(`${iconPrefix("clock")}Stale (${staleThresholdDays}d+): ${stats.staleCount}`));
 
   if (stats.mergeCandidates.length > 0) {
-    console.log(chalk.bold("\n🔄 Merge Candidates (similarity ≥ 0.8):"));
+    console.log(chalk.bold(`\n${iconPrefix("merge")}Merge Candidates (similarity ≥ 0.8):`));
     stats.mergeCandidates.forEach((p) => {
+      console.log(`  - ${p.a} ↔ ${p.b} (sim ${p.similarity})`);
+    });
+  }
+
+  if (stats.semanticMergeCandidates.length > 0) {
+    console.log(chalk.bold(`\n${iconPrefix("brain")}Semantic Merge Candidates (similarity ≥ 0.85):`));
+    stats.semanticMergeCandidates.forEach((p) => {
       console.log(`  - ${p.a} ↔ ${p.b} (sim ${p.similarity})`);
     });
   }

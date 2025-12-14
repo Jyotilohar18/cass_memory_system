@@ -519,6 +519,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "emoji-test", helpfulCount: 10 })
       ]);
       const originalHome = process.env.HOME;
+      const originalNoEmoji = process.env.CASS_MEMORY_NO_EMOJI;
 
       try {
         process.env.HOME = home;
@@ -536,6 +537,38 @@ describe("E2E: CLI stats command", () => {
         expect(output).toContain("✅");
       } finally {
         process.env.HOME = originalHome;
+        if (originalNoEmoji === undefined) delete process.env.CASS_MEMORY_NO_EMOJI;
+        else process.env.CASS_MEMORY_NO_EMOJI = originalNoEmoji;
+      }
+    });
+
+    it("respects CASS_MEMORY_NO_EMOJI for human output", async () => {
+      const { home } = await setupTestEnvironment([
+        createTestBullet({ id: "no-emoji-test", helpfulCount: 10 })
+      ]);
+      const originalHome = process.env.HOME;
+      const originalNoEmoji = process.env.CASS_MEMORY_NO_EMOJI;
+
+      try {
+        process.env.HOME = home;
+        process.env.CASS_MEMORY_NO_EMOJI = "1";
+
+        const capture = captureConsole();
+        try {
+          await statsCommand({ json: false });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        expect(output).toContain("Playbook Health Dashboard");
+        expect(output).not.toContain("📊");
+        expect(output).not.toContain("🌟");
+        expect(output).not.toContain("✅");
+      } finally {
+        process.env.HOME = originalHome;
+        if (originalNoEmoji === undefined) delete process.env.CASS_MEMORY_NO_EMOJI;
+        else process.env.CASS_MEMORY_NO_EMOJI = originalNoEmoji;
       }
     });
   });

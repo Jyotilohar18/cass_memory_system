@@ -7,6 +7,7 @@ import chalk from "chalk";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ContextResult } from "./types.js";
+import { iconPrefix } from "./output.js";
 
 const execAsync = promisify(exec);
 
@@ -2167,7 +2168,7 @@ export function formatContextMarkdown(result: ContextResult): string {
 
   // Pitfalls to Avoid (Anti-patterns)
   if (result.antiPatterns.length > 0) {
-    lines.push(`## ⚠️ PITFALLS TO AVOID (${result.antiPatterns.length})`);
+    lines.push(`## ${iconPrefix("warning")}PITFALLS TO AVOID (${result.antiPatterns.length})`);
     lines.push("");
     for (const bullet of result.antiPatterns) {
       lines.push(`**[${bullet.id}]** ${truncateSnippet(bullet.content, 200)}`);
@@ -2193,7 +2194,7 @@ export function formatContextMarkdown(result: ContextResult): string {
 
   // Deprecated Warnings
   if (result.deprecatedWarnings.length > 0) {
-    lines.push("## ⚠️ WARNINGS");
+    lines.push(`## ${iconPrefix("warning")}WARNINGS`);
     lines.push("");
     for (const warning of result.deprecatedWarnings) {
       lines.push(`  • ${warning}`);

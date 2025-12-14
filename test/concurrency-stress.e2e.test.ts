@@ -160,7 +160,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         // Run 20 parallel playbook reads
         const results = await Promise.all(
           Array(20).fill(null).map(async () => {
-            const captured = await runCaptured(() => playbookCommand({ json: true }));
+            const captured = await runCaptured(() => playbookCommand("list", [], { json: true }));
             return captured;
           })
         );
@@ -194,7 +194,7 @@ describe("E2E: Concurrency Stress Tests", () => {
 
         const results = await Promise.all(
           bullets.map(async (content) => {
-            const captured = await runCaptured(() => playbookCommand({ add: content, json: true }));
+            const captured = await runCaptured(() => playbookCommand("add", [content], { json: true }));
             return { content, ...captured };
           })
         );
@@ -241,14 +241,14 @@ describe("E2E: Concurrency Stress Tests", () => {
           // Add a write
           operations.push(async () => {
             const captured = await runCaptured(() =>
-              playbookCommand({ add: `Interleaved rule ${i}`, json: true })
+              playbookCommand("add", [`Interleaved rule ${i}`], { json: true })
             );
             return { type: "write", ...captured };
           });
           // Add a read
           operations.push(async () => {
             const captured = await runCaptured(() =>
-              playbookCommand({ json: true })
+              playbookCommand("list", [], { json: true })
             );
             return { type: "read", ...captured };
           });
@@ -388,7 +388,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         // Add initial bullet
         const addCapture = captureConsole();
         try {
-          await playbookCommand({ add: "Initial rule: always test concurrency", json: true });
+          await playbookCommand("add", ["Initial rule: always test concurrency"], { json: true });
         } finally {
           addCapture.restore();
         }
@@ -406,9 +406,9 @@ describe("E2E: Concurrency Stress Tests", () => {
         const results = await Promise.all(
           Array(5).fill(null).map(async (_, i) => {
             const captured = await runCaptured(() =>
-              markCommand({
-                bulletId,
-                feedback: i % 2 === 0 ? "helpful" : "not-helpful",
+              markCommand(bulletId, {
+                helpful: i % 2 === 0,
+                harmful: i % 2 !== 0,
                 json: true
               })
             );
@@ -459,7 +459,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         for (let i = 0; i < 3; i++) {
           operations.push(async () => {
             const captured = await runCaptured(() =>
-              playbookCommand({ add: `Stress test rule ${i}` })
+              playbookCommand("add", [`Stress test rule ${i}`], {})
             );
             return { type: "add", ...captured };
           });
@@ -479,7 +479,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         for (let i = 0; i < 3; i++) {
           operations.push(async () => {
             const captured = await runCaptured(() =>
-              playbookCommand({ json: true })
+              playbookCommand("list", [], { json: true })
             );
             return { type: "read", ...captured };
           });
@@ -574,7 +574,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         await Promise.all(
           queries.map(async (q) => {
             const captured = await runCaptured(() =>
-              contextCommand(q, { json: true, limit: 5 })
+              contextCommand(q, { json: true })
             );
             return captured;
           })
@@ -614,7 +614,7 @@ describe("E2E: Concurrency Stress Tests", () => {
         // Run 50 commands in rapid succession (sequential, not parallel)
         for (let i = 0; i < 50; i++) {
           const cmdStart = performance.now();
-          const captured = await runCaptured(() => playbookCommand({ json: true }));
+          const captured = await runCaptured(() => playbookCommand("list", [], { json: true }));
           results.push({
             success: !captured.error,
             duration: performance.now() - cmdStart

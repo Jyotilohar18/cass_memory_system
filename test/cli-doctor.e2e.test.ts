@@ -129,6 +129,24 @@ describe("E2E: CLI doctor command", () => {
       expect(output.match(/[✅⚠️❌]/)).toBeTruthy();
     });
 
+    it("respects CASS_MEMORY_NO_EMOJI for human output", async () => {
+      const capture = captureConsole();
+      const originalNoEmoji = process.env.CASS_MEMORY_NO_EMOJI;
+
+      try {
+        process.env.CASS_MEMORY_NO_EMOJI = "1";
+        await doctorCommand({ json: false });
+      } finally {
+        capture.restore();
+        if (originalNoEmoji === undefined) delete process.env.CASS_MEMORY_NO_EMOJI;
+        else process.env.CASS_MEMORY_NO_EMOJI = originalNoEmoji;
+      }
+
+      const output = capture.logs.join("\n");
+      expect(output).toContain("System Health Check");
+      expect(output.match(/[✅⚠️❌]/)).toBeFalsy();
+    });
+
     it("health check includes status for each category", async () => {
       const capture = captureConsole();
       try {

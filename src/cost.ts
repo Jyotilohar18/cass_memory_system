@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { Config } from "./types.js";
 import { expandPath, ensureDir, atomicWrite, now, fileExists } from "./utils.js";
 import { withLock } from "./lock.js";
+import { icon } from "./output.js";
 
 export interface CostEntry {
   timestamp: string;
@@ -201,7 +202,8 @@ export function formatCostSummary(
   // Daily usage
   if (stats.dailyLimit > 0) {
     const dailyPercent = ((stats.today / stats.dailyLimit) * 100).toFixed(0);
-    const dailyWarning = stats.today >= stats.dailyLimit * 0.8 ? " ⚠️" : "";
+    const warning = icon("warning");
+    const dailyWarning = stats.today >= stats.dailyLimit * 0.8 && warning ? ` ${warning}` : "";
     parts.push(`Daily: $${stats.today.toFixed(2)}/$${stats.dailyLimit.toFixed(2)} (${dailyPercent}%)${dailyWarning}`);
   }
 
