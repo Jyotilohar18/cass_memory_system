@@ -180,8 +180,8 @@ describe("CLI Command Chains E2E", () => {
       // Verify bullet is active
       const listResult1 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult1.exitCode).toBe(0);
-      const bullets1 = JSON.parse(listResult1.stdout);
-      expect(bullets1.some((b: any) => b.id === bulletId)).toBe(true);
+      const list1Response = JSON.parse(listResult1.stdout);
+      expect(list1Response.bullets.some((b: any) => b.id === bulletId)).toBe(true);
 
       // Forget the bullet
       const forgetResult = runCm([
@@ -200,8 +200,8 @@ describe("CLI Command Chains E2E", () => {
       // Bullet should not appear in active list
       const listResult2 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult2.exitCode).toBe(0);
-      const bullets2 = JSON.parse(listResult2.stdout);
-      expect(bullets2.some((b: any) => b.id === bulletId)).toBe(false);
+      const list2Response = JSON.parse(listResult2.stdout);
+      expect(list2Response.bullets.some((b: any) => b.id === bulletId)).toBe(false);
 
       // Undo the forget
       const undoResult = runCm(["undo", bulletId, "--json"], testDir);
@@ -219,8 +219,8 @@ describe("CLI Command Chains E2E", () => {
       // Bullet should appear in active list again
       const listResult3 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult3.exitCode).toBe(0);
-      const bullets3 = JSON.parse(listResult3.stdout);
-      expect(bullets3.some((b: any) => b.id === bulletId)).toBe(true);
+      const list3Response = JSON.parse(listResult3.stdout);
+      expect(list3Response.bullets.some((b: any) => b.id === bulletId)).toBe(true);
     }, { timeout: 30000 });
 
     test.serial("undo --feedback removes the last feedback event", () => {
@@ -289,8 +289,8 @@ describe("CLI Command Chains E2E", () => {
       // Bullet should be gone from list
       const listAfterDelete = runCm(["playbook", "list", "--json"], testDir);
       expect(listAfterDelete.exitCode).toBe(0);
-      const bullets = JSON.parse(listAfterDelete.stdout);
-      expect(bullets.some((b: any) => b.id === bulletId)).toBe(false);
+      const listAfterDeleteResponse = JSON.parse(listAfterDelete.stdout);
+      expect(listAfterDeleteResponse.bullets.some((b: any) => b.id === bulletId)).toBe(false);
     }, { timeout: 60000 });
   });
 

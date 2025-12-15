@@ -80,9 +80,10 @@ describe("E2E CLI Smoke Test", () => {
 
     expect(result.exitCode).toBe(0);
 
-    // Should return valid JSON array
-    const bullets = JSON.parse(result.stdout);
-    expect(Array.isArray(bullets)).toBe(true);
+    // Should return valid JSON object with bullets array
+    const listResponse = JSON.parse(result.stdout);
+    expect(listResponse.success).toBe(true);
+    expect(Array.isArray(listResponse.bullets)).toBe(true);
   });
 
   test("cm playbook add creates a bullet", () => {

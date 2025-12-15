@@ -454,11 +454,11 @@ describe("E2E: Team Workflow", () => {
         });
         expect(listResult.exitCode).toBe(0);
 
-        const bullets = JSON.parse(listResult.stdout);
+        const listResponse = JSON.parse(listResult.stdout);
         // Should include both global and repo rules
-        expect(bullets.length).toBeGreaterThanOrEqual(2);
+        expect(listResponse.bullets.length).toBeGreaterThanOrEqual(2);
 
-        const contents = bullets.map((b: any) => b.content);
+        const contents = listResponse.bullets.map((b: any) => b.content);
         const hasGlobal = contents.some((c: string) => c.includes("Global rule"));
         const hasRepo = contents.some((c: string) => c.includes("Repo rule"));
         expect(hasGlobal && hasRepo).toBe(true);

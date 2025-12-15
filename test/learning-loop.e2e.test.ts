@@ -154,8 +154,8 @@ describe("E2E: ACE Learning Loop", () => {
         stderr: listA.stderr,
       });
       expect(listA.exitCode).toBe(0);
-      const bulletsA = JSON.parse(listA.stdout) as any[];
-      const bulletA = bulletsA.find((b) => typeof b?.content === "string" && b.content.includes("Promise rejections"));
+      const listAResponse = JSON.parse(listA.stdout) as { success: boolean; bullets: any[] };
+      const bulletA = listAResponse.bullets.find((b) => typeof b?.content === "string" && b.content.includes("Promise rejections"));
       expect(bulletA).toBeDefined();
       const bulletAId = bulletA.id as string;
       expect(bulletAId).toMatch(/^b-/);

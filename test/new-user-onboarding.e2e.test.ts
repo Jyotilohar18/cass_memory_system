@@ -305,8 +305,8 @@ describe("E2E: New User Onboarding", () => {
       const result = runCm(["playbook", "list", "--json"], testDir);
       expect(result.exitCode).toBe(0);
 
-      const bullets = JSON.parse(result.stdout);
-      expect(bullets).toEqual([]);
+      const listResponse = JSON.parse(result.stdout);
+      expect(listResponse).toEqual({ success: true, bullets: [] });
     });
   });
 

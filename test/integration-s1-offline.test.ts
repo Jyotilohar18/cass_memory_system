@@ -84,8 +84,8 @@ describe("S1 Offline Smoke (no cass, no LLM)", () => {
     // 5) list and assert helpful count increments
     const list = await runCm(["playbook", "list", "--json"]);
     expect(list.exitCode).toBe(0);
-    const bullets = JSON.parse(list.stdout.toString());
-    const added = bullets.find((b: any) => b.id === bulletId);
+    const listResponse = JSON.parse(list.stdout.toString());
+    const added = listResponse.bullets.find((b: any) => b.id === bulletId);
     expect(added).toBeTruthy();
     expect(added.helpfulCount || added.helpful_count || 0).toBeGreaterThanOrEqual(1);
   }, 20000);

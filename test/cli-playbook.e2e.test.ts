@@ -198,9 +198,10 @@ describe("E2E: CLI playbook command", () => {
         const output = capture.logs.join("\n");
         const parsed = JSON.parse(output);
 
-        expect(Array.isArray(parsed)).toBe(true);
-        expect(parsed.length).toBe(1);
-        expect(parsed[0].id).toBe("json-bullet");
+        expect(parsed.success).toBe(true);
+        expect(Array.isArray(parsed.bullets)).toBe(true);
+        expect(parsed.bullets.length).toBe(1);
+        expect(parsed.bullets[0].id).toBe("json-bullet");
       });
     });
 
@@ -231,8 +232,9 @@ describe("E2E: CLI playbook command", () => {
         const output = capture.logs.join("\n");
         const parsed = JSON.parse(output);
 
-        expect(parsed.length).toBe(1);
-        expect(parsed[0].id).toBe("active-bullet");
+        expect(parsed.success).toBe(true);
+        expect(parsed.bullets.length).toBe(1);
+        expect(parsed.bullets[0].id).toBe("active-bullet");
       });
     });
   });
