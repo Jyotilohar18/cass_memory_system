@@ -59,11 +59,11 @@ export async function outcomeCommand(
   }
 ) {
   if (!flags.status) {
-    console.error(chalk.red("Outcome status is required (--status success|failure|mixed)"));
+    console.error(chalk.red("Outcome status is required (usage: cm outcome <status> <rules>)"));
     process.exit(1);
   }
   if (!flags.rules) {
-    console.error(chalk.red("At least one rule id is required (--rules <id1,id2,....>)"));
+    console.error(chalk.red("At least one rule id is required (usage: cm outcome <status> <rules>)"));
     process.exit(1);
   }
 
