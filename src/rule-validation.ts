@@ -5,9 +5,9 @@
  * Uses existing infrastructure: semantic search for similarity, keyword matching for categories.
  */
 
-import { Playbook, PlaybookBullet } from "./types.js";
+import { Playbook } from "./types.js";
 import { findSimilarBulletsSemantic } from "./semantic.js";
-import { CATEGORY_KEYWORDS, detectCategories, RuleCategory } from "./gap-analysis.js";
+import { detectCategories, RuleCategory } from "./gap-analysis.js";
 import { getActiveBullets } from "./playbook.js";
 
 /**
@@ -292,9 +292,8 @@ export function formatValidationResult(result: ValidationResult): string {
     lines.push(`  ${icon} ${warning.message}`);
   }
 
-  if (result.suggestions.category) {
-    lines.push(`  Suggested category: ${result.suggestions.category}`);
-  }
+  // Note: suggested category info is already in the category warning message,
+  // so we don't add a separate line here to avoid redundancy
 
   return lines.join("\n");
 }
