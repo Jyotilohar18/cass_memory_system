@@ -305,8 +305,8 @@ program.command("serve")
 // --- Outcome ---
 program.command("outcome")
   .description("Record implicit feedback from a session outcome for shown rules")
-  .requiredOption("--status <status>", "Outcome status: success|failure|mixed")
-  .requiredOption("--rules <ids>", "Comma-separated rule ids that were shown")
+  .argument("<status>", "Outcome status: success|failure|mixed")
+  .argument("<rules>", "Comma-separated rule ids that were shown")
   .option("--session <path>", "Session path for provenance")
   .option("--duration <seconds>", "Task duration in seconds", toInt)
   .option("--errors <count>", "Number of errors encountered", toInt)
@@ -314,7 +314,7 @@ program.command("outcome")
   .option("--sentiment <sentiment>", "positive|negative|neutral")
   .option("--text <text>", "Session notes to auto-detect sentiment")
   .option("--json", "Output JSON")
-  .action(async (opts: any) => await outcomeCommand(undefined, opts));
+  .action(async (status: string, rules: string, opts: any) => await outcomeCommand(undefined, { ...opts, status, rules }));
 
 // --- Outcome Apply ---
 program.command("outcome-apply")
