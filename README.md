@@ -386,13 +386,13 @@ The `cm onboard` command guides your agent through analyzing historical sessions
 
 ```bash
 # 1. Check status and see recommendations
-cm onboard --status
+cm onboard status
 
 # 2. Get sessions to analyze (filtered by gaps in your playbook)
-cm onboard --sample --fill-gaps
+cm onboard sample --fill-gaps
 
 # 3. Read a session with rich context
-cm onboard --read /path/to/session.jsonl --template
+cm onboard read /path/to/session.jsonl --template
 
 # 4. Add extracted rules (one at a time or batch)
 cm playbook add "Your rule content" --category "debugging"
@@ -400,7 +400,7 @@ cm playbook add "Your rule content" --category "debugging"
 cm playbook add --file rules.json
 
 # 5. Mark session as processed
-cm onboard --mark-done /path/to/session.jsonl
+cm onboard mark-done /path/to/session.jsonl
 ```
 
 ### Gap Analysis
@@ -429,10 +429,10 @@ Not all playbook categories are equally represented. The gap analysis system ide
 
 ```bash
 # View detailed gap analysis
-cm onboard --gaps
+cm onboard gaps
 
 # Sample sessions prioritized for gap-filling
-cm onboard --sample --fill-gaps
+cm onboard sample --fill-gaps
 ```
 
 ### Progress Tracking
@@ -463,13 +463,13 @@ Onboarding progress persists across sessions, so agents can resume where they le
 Commands for progress management:
 ```bash
 # Check progress
-cm onboard --status
+cm onboard status
 
 # Mark a session as done (even if no rules extracted)
-cm onboard --mark-done /path/to/session.jsonl
+cm onboard mark-done /path/to/session.jsonl
 
 # Reset progress to start fresh
-cm onboard --reset
+cm onboard reset
 ```
 
 ### Batch Rule Addition
@@ -503,7 +503,7 @@ The `--session` flag automatically updates onboarding progress, crediting the se
 The `--template` flag provides agents with rich contextual information to guide extraction:
 
 ```bash
-cm onboard --read /path/to/session.jsonl --template --json
+cm onboard read /path/to/session.jsonl --template --json
 ```
 
 **Template output includes:**
@@ -581,23 +581,23 @@ Filter sessions by various criteria to focus on specific areas:
 
 ```bash
 # Filter by workspace/project
-cm onboard --sample --workspace /Users/x/my-project
+cm onboard sample --workspace /Users/x/my-project
 
 # Filter by agent
-cm onboard --sample --agent claude
-cm onboard --sample --agent cursor
+cm onboard sample --agent claude
+cm onboard sample --agent cursor
 
 # Filter by recency
-cm onboard --sample --days 30
+cm onboard sample --days 30
 
 # Combine filters
-cm onboard --sample --agent claude --days 14 --workspace /Users/x/api-project
+cm onboard sample --agent claude --days 14 --workspace /Users/x/api-project
 
 # Include already-processed sessions (for re-analysis)
-cm onboard --sample --include-processed
+cm onboard sample --include-processed
 
 # Adjust sample size
-cm onboard --sample --limit 20
+cm onboard sample --limit 20
 ```
 
 ### Onboarding Workflow for Agents
@@ -608,22 +608,22 @@ Recommended protocol for AI agents doing onboarding:
 ## Onboarding Protocol
 
 ### Phase 1: Assessment
-1. Run `cm onboard --status --json` to check current progress
-2. Run `cm onboard --gaps --json` to see category distribution
+1. Run `cm onboard status --json` to check current progress
+2. Run `cm onboard gaps --json` to see category distribution
 3. Decide target: ~20 rules across diverse categories for a good initial playbook
 
 ### Phase 2: Session Analysis Loop
 For each session until target reached:
-1. `cm onboard --sample --fill-gaps --json` → get prioritized sessions
-2. `cm onboard --read <path> --template --json` → get session with context
+1. `cm onboard sample --fill-gaps --json` → get prioritized sessions
+2. `cm onboard read <path> --template --json` → get session with context
 3. Analyze session content, identify 2-5 reusable patterns
 4. Format as rules following extraction guidelines
 5. `cm playbook add --file rules.json --session <path>` → add rules
 6. Repeat with next session
 
 ### Phase 3: Verification
-1. `cm onboard --status` → verify progress
-2. `cm onboard --gaps` → check remaining gaps
+1. `cm onboard status` → verify progress
+2. `cm onboard gaps` → check remaining gaps
 3. `cm stats --json` → verify playbook health
 ```
 
