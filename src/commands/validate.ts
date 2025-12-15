@@ -136,7 +136,7 @@ function printResult(result: ValidationOutput, options: ValidateOptions) {
       ? chalk.red
       : chalk.yellow;
 
-  console.log(chalk.bold("\n🔬 Validation Result"));
+  console.log(chalk.bold("\nValidation Result"));
   console.log(`Rule: ${result.proposedRule}`);
   console.log(`Verdict: ${verdictColor(result.verdict)} (confidence ${result.confidence.toFixed(2)})`);
   console.log(`Reason: ${result.reason}`);
