@@ -210,13 +210,13 @@ function buildRecommendedActions(params: {
     });
   }
 
-  const llmCheck = params.checks.find((c) => c.category === "LLM");
-  if (llmCheck?.status === "fail") {
+  const llmCheck = params.checks.find((c) => c.category === "LLM Configuration");
+  if (llmCheck?.status === "warn") {
     actions.push({
-      label: "Configure an LLM API key (optional but recommended)",
+      label: "Configure an LLM API key (optional)",
       command: "export ANTHROPIC_API_KEY=\"...\"  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY",
-      reason: "LLM-backed reflection/validation requires an API key. The CLI still works in offline mode.",
-      urgency: "medium",
+      reason: "Enables AI-powered reflection. The CLI works fully without it.",
+      urgency: "low",
     });
   }
 
@@ -315,13 +315,15 @@ async function computeDoctorChecks(
     }
   }
 
-  // 3) LLM config
+  // 3) LLM config (optional - system works without it via graceful degradation)
   const hasApiKey = isLLMAvailable(config.provider) || !!config.apiKey;
   checks.push({
     category: "LLM Configuration",
     item: "Provider",
-    status: hasApiKey ? "pass" : "fail",
-    message: `Provider: ${config.provider}, API Key: ${hasApiKey ? "Set" : "Missing"}`,
+    status: hasApiKey ? "pass" : "warn",
+    message: hasApiKey
+      ? `Provider: ${config.provider}, API Key: Set`
+      : `Provider: ${config.provider}, API Key: Not set (optional - needed for AI-powered reflection)`,
   });
 
   // 4) Repo-level .cass/ structure (if in a git repo)
