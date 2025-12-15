@@ -11,7 +11,7 @@ import {
   generateSuggestedQueries,
   warn,
   isJsonOutput,
-  printJson,
+  printJsonResult,
   truncate,
   formatLastHelpful,
   extractBulletReasoning,
@@ -27,7 +27,7 @@ import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet } from "../types.js";
 import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
 import chalk from "chalk";
-import { formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
+import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 
 // ============================================================================ 
 // buildContextResult - Assemble final ContextResult output
@@ -233,13 +233,11 @@ export async function generateContextResult(
     }
   }
 
-  const suggestedQueriesBase = generateSuggestedQueries(task, keywords, {
+  // Keep suggestedCassQueries semantically pure: only search queries, no remediation
+  // Remediation commands (cm doctor, cass health, etc.) are in degraded.cass.suggestedFix
+  const suggestedQueries = generateSuggestedQueries(task, keywords, {
     maxSuggestions: 5
   });
-  const suggestedQueries =
-    degraded?.cass?.suggestedFix && degraded.cass.suggestedFix.length > 0
-      ? Array.from(new Set([...degraded.cass.suggestedFix, ...suggestedQueriesBase]))
-      : suggestedQueriesBase;
 
   const result = buildContextResult(
     task,
@@ -404,7 +402,7 @@ export async function contextCommand(
   const wantsJson = isJsonOutput(flags);
 
   if (wantsJson) {
-    printJson(result);
+    printJsonResult(result);
     return;
   }
 
@@ -473,7 +471,8 @@ export async function contextCommand(
     const snippetWidth = Math.max(24, maxWidth - 4);
     cassHits.slice(0, shown).forEach((h, i) => {
       const agent = h.agent || "unknown";
-      console.log(chalk.bold(`${i + 1}. ${agent}`) + chalk.dim(` • ${h.source_path}`));
+      const agentLabel = `${agentIconPrefix(agent)}${agent}`;
+      console.log(chalk.bold(`${i + 1}. ${agentLabel}`) + chalk.dim(` • ${h.source_path}`));
       const snippet = h.snippet.trim().replace(/\s+/g, " ");
       for (const line of wrapText(`"${snippet}"`, snippetWidth)) {
         console.log(chalk.gray(`  ${line}`));
@@ -484,7 +483,7 @@ export async function contextCommand(
     console.log(chalk.bold("HISTORY (0)"));
     console.log(divider);
     console.log(chalk.gray("(No relevant history found)"));
-    console.log(chalk.gray(`  ${formatTipPrefix()}Use Claude Code, Cursor, or Codex to build session history.`));
+    console.log(chalk.gray(`  ${formatTipPrefix()}Use Claude Code, Cursor, Codex, or PI to build session history.`));
     console.log("");
   }
 
