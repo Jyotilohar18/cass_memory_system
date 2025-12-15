@@ -305,11 +305,11 @@ These comments are automatically parsed during reflection and update rule confid
 After completing a task, record the outcome:
 
 ```bash
-# Record successful outcome
-cm outcome --status success --rules b-8f3a2c,b-xyz789 --summary "Fixed auth bug"
+# Record successful outcome (positional: status, rules)
+cm outcome success b-8f3a2c,b-xyz789 --summary "Fixed auth bug"
 
 # Record failure
-cm outcome --status failure --rules b-x7k9p1 --summary "Rule led to wrong approach"
+cm outcome failure b-x7k9p1 --summary "Rule led to wrong approach"
 
 # Apply recorded outcomes to playbook
 cm outcome-apply
@@ -778,9 +778,9 @@ cm reflect --days 7 --json
 cm mark b-8f3a2c --helpful
 cm mark b-xyz789 --harmful --reason "Caused regression"
 
-# Record session outcome
-cm outcome --status success --rules b-8f3a2c,b-def456
-cm outcome --status failure --summary "Auth approach failed"
+# Record session outcome (positional: status, rules)
+cm outcome success b-8f3a2c,b-def456
+cm outcome failure b-x7k9p1 --summary "Auth approach failed"
 
 # Apply recorded outcomes to playbook
 cm outcome-apply
