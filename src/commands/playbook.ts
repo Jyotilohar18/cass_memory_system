@@ -653,6 +653,12 @@ export async function playbookCommand(
 
       await savePlaybook(playbook, config.playbookPath);
 
+      // Track session for provenance if --session was provided
+      if (flags.session) {
+        const { markSessionProcessed } = await import("../onboard-state.js");
+        await markSessionProcessed(flags.session, 1);
+      }
+
       if (flags.json) {
         const result: any = { success: true, bullet };
         if (validation) result.validation = validation;
