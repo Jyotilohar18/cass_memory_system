@@ -99,11 +99,11 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   if (!availability.canContinue || availability.fallbackMode === "playbook-only") {
     recommendation = "Install cass first to enable historical session analysis";
   } else if (playbookRules === 0) {
-    recommendation = "Your playbook is empty! Run `cm onboard --guided` to start extracting rules";
+    recommendation = "Your playbook is empty! Run `cm onboard guided` to start extracting rules";
   } else if (playbookRules < 10) {
-    recommendation = "Your playbook has few rules. Run `cm onboard --guided` to add more";
+    recommendation = "Your playbook has few rules. Run `cm onboard guided` to add more";
   } else if (playbookRules < 50) {
-    recommendation = "Consider running `cm onboard --sample` to find more patterns";
+    recommendation = "Consider running `cm onboard sample` to find more patterns";
   } else {
     recommendation = "Your playbook looks healthy. Use `cm context` for task-specific rules";
   }
@@ -363,19 +363,19 @@ This is "free" since you're already being paid for via Claude Max/GPT Pro.
 
 ### Step 1: Sample Sessions
 \`\`\`bash
-${cli} onboard --sample --json
+${cli} onboard sample --json
 \`\`\`
 This returns diverse sessions from your cass history to analyze.
 
 ### Step 2: Read a Session
 \`\`\`bash
-${cli} onboard --read <session-path>
+${cli} onboard read <session-path>
 \`\`\`
 This exports the session content for you to analyze.
 
 ### Step 3: Extract Rules
 Read the session content and identify reusable patterns.
-Use the extraction prompt (\`${cli} onboard --prompt\`) for guidance.
+Use the extraction prompt (\`${cli} onboard prompt\`) for guidance.
 
 ### Step 4: Add Rules
 \`\`\`bash
@@ -391,10 +391,10 @@ Process 10-20 diverse sessions for a good initial playbook.
 
 | Command | Purpose |
 |---------|---------|
-| \`${cli} onboard --status\` | Check onboarding status |
-| \`${cli} onboard --sample\` | Get sessions to analyze |
-| \`${cli} onboard --read <path>\` | Read a session |
-| \`${cli} onboard --prompt\` | Get extraction instructions |
+| \`${cli} onboard status\` | Check onboarding status |
+| \`${cli} onboard sample\` | Get sessions to analyze |
+| \`${cli} onboard read <path>\` | Read a session |
+| \`${cli} onboard prompt\` | Get extraction instructions |
 | \`${cli} playbook add "..." --category "..."\` | Add a rule |
 | \`${cli} playbook list\` | View all rules |
 
@@ -549,7 +549,7 @@ export async function onboardCommand(
 
       console.log("");
       console.log(chalk.yellow(gapAnalysis.suggestions));
-      console.log(chalk.dim(`\nTo sample sessions that fill gaps: ${cli} onboard --sample --fill-gaps`));
+      console.log(chalk.dim(`\nTo sample sessions that fill gaps: ${cli} onboard sample --fill-gaps`));
     }
     return;
   }
@@ -662,7 +662,7 @@ export async function onboardCommand(
           console.log(chalk.gray(`  "${s.snippet.slice(0, 80)}..."`));
           console.log("");
         }
-        console.log(chalk.dim(`\nTo read a session: ${cli} onboard --read <path>`));
+        console.log(chalk.dim(`\nTo read a session: ${cli} onboard read <path>`));
       }
     }
     return;
@@ -819,8 +819,8 @@ export async function onboardCommand(
         console.log(chalk.yellow("Now analyze this session and extract rules using:"));
         console.log(chalk.cyan(`  ${cli} playbook add "Your rule" --category "category"`));
         console.log("");
-        console.log(chalk.dim(`For extraction guidance: ${cli} onboard --prompt`));
-        console.log(chalk.dim(`For rich context: ${cli} onboard --read <path> --template`));
+        console.log(chalk.dim(`For extraction guidance: ${cli} onboard prompt`));
+        console.log(chalk.dim(`For rich context: ${cli} onboard read <path> --template`));
       } else {
         console.error(chalk.red(`Failed to read session: ${options.read}`));
       }

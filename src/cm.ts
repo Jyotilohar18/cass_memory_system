@@ -325,26 +325,58 @@ program.command("outcome-apply")
   .action(async (opts: any) => await applyOutcomeLogCommand(opts));
 
 // --- Onboard (agent-native guided onboarding) ---
-program.command("onboard")
-  .description("Agent-native guided onboarding (no API costs)")
-  .option("--status", "Check onboarding status and progress")
-  .option("--sample", "Sample diverse sessions for analysis")
-  .option("--read <path>", "Read/export a session for analysis")
-  .option("--prompt", "Show extraction instructions for agent")
-  .option("--guided", "Show full guided onboarding flow")
-  .option("--limit <n>", "Number of sessions to sample", toInt)
-  .option("--mark-done <path>", "Mark a session as processed without extracting rules")
-  .option("--reset", "Reset onboarding progress (start fresh)")
-  .option("--yes", "Confirm reset without prompting")
-  .option("--include-processed", "Include already-processed sessions in --sample")
-  .option("--workspace <path>", "Filter sessions by workspace")
-  .option("--agent <name>", "Filter sessions by agent (claude, cursor, etc)")
-  .option("--days <n>", "Filter sessions to last N days", toInt)
-  .option("--gaps", "Show playbook category gap analysis")
-  .option("--fill-gaps", "With --sample, prioritize sessions for underrepresented categories")
-  .option("--template", "With --read, provide rich contextual output for extraction")
+const onboard = program.command("onboard")
+  .description("Agent-native guided onboarding (no API costs)");
+
+onboard.command("status")
+  .description("Check onboarding status and progress")
   .option("--json", "Output JSON")
-  .action(async (opts: any) => await onboardCommand(opts));
+  .action(async (opts: any) => await onboardCommand({ ...opts, status: true }));
+
+onboard.command("gaps")
+  .description("Show playbook category gap analysis")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand({ ...opts, gaps: true }));
+
+onboard.command("sample")
+  .description("Sample diverse sessions for analysis")
+  .option("--limit <n>", "Number of sessions to sample", toInt)
+  .option("--fill-gaps", "Prioritize sessions for underrepresented categories")
+  .option("--include-processed", "Include already-processed sessions")
+  .option("--workspace <path>", "Filter by workspace")
+  .option("--agent <name>", "Filter by agent (claude, cursor, etc)")
+  .option("--days <n>", "Filter to last N days", toInt)
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand({ ...opts, sample: true }));
+
+onboard.command("read")
+  .description("Read/export a session for analysis")
+  .argument("<path>", "Session path to read")
+  .option("--template", "Rich contextual output for extraction")
+  .option("--json", "Output JSON")
+  .action(async (sessionPath: string, opts: any) => await onboardCommand({ ...opts, read: sessionPath }));
+
+onboard.command("prompt")
+  .description("Show extraction instructions for agent")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand({ ...opts, prompt: true }));
+
+onboard.command("guided")
+  .description("Show full guided onboarding workflow")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand({ ...opts, guided: true }));
+
+onboard.command("mark-done")
+  .description("Mark a session as processed without extracting rules")
+  .argument("<path>", "Session path to mark as done")
+  .option("--json", "Output JSON")
+  .action(async (sessionPath: string, opts: any) => await onboardCommand({ ...opts, markDone: sessionPath }));
+
+onboard.command("reset")
+  .description("Reset onboarding progress (start fresh)")
+  .option("--yes", "Confirm without prompting")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand({ ...opts, reset: true }));
 
 /**
  * Detect if --json flag is present in argv (before commander parses).
