@@ -97,6 +97,8 @@ playbook.command("add")
   .option("--category <cat>", "Category", "general")
   .option("--file <path>", "Batch add from JSON file (use '-' for stdin)")
   .option("--session <path>", "Session path to track in onboarding progress (with --file)")
+  .option("--check", "Show validation results before adding")
+  .option("--strict", "With --check, fail on warnings instead of adding")
   .option("--json", "Output JSON")
   .action(async (content: string | undefined, opts: any) => {
     // If --file is provided, content is optional

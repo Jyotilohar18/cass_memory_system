@@ -4,6 +4,7 @@ import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDa
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema } from "../types.js";
+import { validateRule, formatValidationResult, hasIssues, type ValidationResult } from "../rule-validation.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
@@ -137,9 +138,10 @@ type BatchRule = z.infer<typeof BatchRuleSchema>;
 
 interface BatchAddResult {
   success: boolean;
-  added: Array<{ id: string; content: string; category: string }>;
+  added: Array<{ id: string; content: string; category: string; validation?: ValidationResult }>;
+  skipped: Array<{ content: string; reason: string; validation?: ValidationResult }>;
   failed: Array<{ content: string; error: string }>;
-  summary: { total: number; succeeded: number; failed: number };
+  summary: { total: number; succeeded: number; skipped: number; failed: number };
 }
 
 /**
@@ -147,13 +149,14 @@ interface BatchAddResult {
  */
 async function handleBatchAdd(
   config: Awaited<ReturnType<typeof loadConfig>>,
-  flags: { file?: string; category?: string }
+  flags: { file?: string; category?: string; check?: boolean; strict?: boolean }
 ): Promise<BatchAddResult> {
   const result: BatchAddResult = {
     success: false,
     added: [],
+    skipped: [],
     failed: [],
-    summary: { total: 0, succeeded: 0, failed: 0 },
+    summary: { total: 0, succeeded: 0, skipped: 0, failed: 0 },
   };
 
   // Read input
@@ -231,6 +234,23 @@ async function handleBatchAdd(
       // Use per-rule category or fall back to flag category or "general"
       const category = rule.category || flags.category || "general";
 
+      // Validate if --check flag is set
+      let validation: ValidationResult | undefined;
+      if (flags.check) {
+        validation = await validateRule(rule.content, category, playbook);
+
+        // In strict mode, skip rules with issues
+        if (flags.strict && hasIssues(validation)) {
+          result.skipped.push({
+            content: rule.content.slice(0, 50),
+            reason: "Validation failed in strict mode",
+            validation,
+          });
+          result.summary.skipped++;
+          continue;
+        }
+      }
+
       try {
         const bullet = addBullet(
           playbook,
@@ -248,6 +268,7 @@ async function handleBatchAdd(
           id: bullet.id,
           content: rule.content,
           category,
+          validation,
         });
         result.summary.succeeded++;
       } catch (err: any) {
@@ -264,7 +285,7 @@ async function handleBatchAdd(
     }
   });
 
-  result.summary.failed = result.summary.total - result.summary.succeeded;
+  result.summary.failed = result.summary.total - result.summary.succeeded - result.summary.skipped;
   result.success = result.summary.failed === 0;
 
   return result;
@@ -285,6 +306,8 @@ export async function playbookCommand(
     yaml?: boolean;
     file?: string;
     session?: string;
+    check?: boolean;
+    strict?: boolean;
   }
 ) {
   const config = await loadConfig();
@@ -560,6 +583,13 @@ export async function playbookCommand(
             console.log(chalk.dim(`  ${r.id}: ${truncate(r.content, 60)}`));
           }
         }
+        if (result.skipped.length > 0) {
+          console.log("");
+          console.log(chalk.yellow(`⊘ Skipped ${result.skipped.length} rules (--strict):`));
+          for (const r of result.skipped) {
+            console.log(chalk.dim(`  "${truncate(r.content, 40)}": ${r.reason}`));
+          }
+        }
         if (result.failed.length > 0) {
           console.log("");
           console.log(chalk.red(`✗ Failed ${result.failed.length} rules:`));
@@ -568,7 +598,10 @@ export async function playbookCommand(
           }
         }
         console.log("");
-        console.log(chalk.dim(`Summary: ${result.summary.succeeded}/${result.summary.total} succeeded`));
+        const parts = [`${result.summary.succeeded} added`];
+        if (result.summary.skipped > 0) parts.push(`${result.summary.skipped} skipped`);
+        if (result.summary.failed > 0) parts.push(`${result.summary.failed} failed`);
+        console.log(chalk.dim(`Summary: ${parts.join(", ")} (${result.summary.total} total)`));
       }
       return;
     }
@@ -577,18 +610,40 @@ export async function playbookCommand(
     const content = args[0];
     if (!content) {
       logError("Content required for add");
-      process.exit(1);
+      throw new Error("Content required for add");
     }
 
     await withLock(config.playbookPath, async () => {
       const { loadPlaybook } = await import("../playbook.js");
       const playbook = await loadPlaybook(config.playbookPath);
+      const category = flags.category || "general";
+
+      // Validate if --check flag is set
+      let validation: ValidationResult | undefined;
+      if (flags.check) {
+        validation = await validateRule(content, category, playbook);
+
+        // In strict mode, fail on warnings
+        if (flags.strict && hasIssues(validation)) {
+          if (flags.json) {
+            console.log(JSON.stringify({
+              success: false,
+              error: "Validation failed in strict mode",
+              validation,
+            }, null, 2));
+          } else {
+            console.log(chalk.red("Validation failed (--strict mode):"));
+            console.log(formatValidationResult(validation));
+          }
+          throw new Error("Validation failed in strict mode");
+        }
+      }
 
       const bullet = addBullet(
         playbook,
         {
           content,
-          category: flags.category || "general",
+          category,
           scope: "global",
           kind: "workflow_rule",
         },
@@ -599,8 +654,15 @@ export async function playbookCommand(
       await savePlaybook(playbook, config.playbookPath);
 
       if (flags.json) {
-        console.log(JSON.stringify({ success: true, bullet }, null, 2));
+        const result: any = { success: true, bullet };
+        if (validation) result.validation = validation;
+        console.log(JSON.stringify(result, null, 2));
       } else {
+        if (validation) {
+          console.log(chalk.bold("Validation:"));
+          console.log(formatValidationResult(validation));
+          console.log("");
+        }
         console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
       }
     });
