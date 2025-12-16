@@ -134,6 +134,46 @@ describe("curatePlaybook", () => {
       expect(result.playbook.bullets[0].feedbackEvents).toHaveLength(3);
     });
 
+    it("does not reinforce similar deprecated bullet (avoids zombie rules)", () => {
+      const deprecatedBullet = createTestBullet({
+        id: "deprecated-1",
+        content: "Always use const for variables that won't change",
+        category: "style",
+        helpfulCount: 2,
+        feedbackEvents: [
+          createFeedbackEvent("helpful"),
+          createFeedbackEvent("helpful")
+        ],
+        deprecated: true,
+        state: "retired",
+        maturity: "deprecated",
+        deprecatedAt: new Date().toISOString(),
+        deprecationReason: "BLOCKED_CONTENT",
+      });
+      const playbook = createTestPlaybook([deprecatedBullet]);
+
+      const delta: PlaybookDelta = {
+        type: "add",
+        bullet: {
+          content: "Always use const for variables that will not change",
+          category: "style",
+          scope: "global",
+          kind: "workflow_rule"
+        },
+        sourceSession: "/session/2.jsonl",
+        reason: "Similar insight"
+      };
+
+      const configWithLowThreshold = createTestConfig({ dedupSimilarityThreshold: 0.7 });
+      const result = curatePlaybook(playbook, [delta], configWithLowThreshold);
+
+      expect(result.applied).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(result.playbook.bullets).toHaveLength(1);
+      expect(result.playbook.bullets[0].helpfulCount).toBe(2);
+      expect(result.playbook.bullets[0].feedbackEvents).toHaveLength(2);
+    });
+
     it("skips delta with missing content", () => {
       const delta: PlaybookDelta = {
         type: "add",

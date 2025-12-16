@@ -295,8 +295,49 @@ export function curatePlaybook(
         // 2. Semantic duplicate check (against reference/merged)
         const similar = findSimilarBullet(content, referencePlaybook, config.dedupSimilarityThreshold);
         if (similar) {
+          const similarIsDeprecated =
+            Boolean(similar.deprecated) ||
+            similar.maturity === "deprecated" ||
+            similar.state === "retired";
+
+          // Never reinforce deprecated/blocked bullets; treat as a skip to prevent zombie rules.
+          if (similarIsDeprecated) {
+            logDecision(
+              decisionLog,
+              "dedup",
+              "skipped",
+              "Similar bullet exists but is deprecated; skipping to avoid resurrecting blocked content",
+              {
+                content: content.slice(0, 100),
+                bulletId: similar.id,
+                details: { similarTo: similar.content.slice(0, 100) }
+              }
+            );
+            break;
+          }
+
           const targetSimilar = findBullet(targetPlaybook, similar.id);
           if (targetSimilar) {
+            const targetIsDeprecated =
+              Boolean(targetSimilar.deprecated) ||
+              targetSimilar.maturity === "deprecated" ||
+              targetSimilar.state === "retired";
+
+            if (targetIsDeprecated) {
+              logDecision(
+                decisionLog,
+                "dedup",
+                "skipped",
+                "Similar bullet exists but is deprecated in target; not reinforcing",
+                {
+                  bulletId: targetSimilar.id,
+                  content: content.slice(0, 100),
+                  details: { similarTo: similar.content.slice(0, 100) }
+                }
+              );
+              break;
+            }
+
             targetSimilar.feedbackEvents.push({
               type: "helpful",
               timestamp: now(),
@@ -321,11 +362,17 @@ export function curatePlaybook(
         }
 
         // 3. Add new (to TARGET)
-        const newBullet = addBullet(targetPlaybook, {
-          content,
-          category: delta.bullet.category,
-          tags: delta.bullet.tags
-        }, delta.sourceSession, config.scoring.decayHalfLifeDays);
+        const newBullet = addBullet(
+          targetPlaybook,
+          {
+            id: delta.bullet.id,
+            content,
+            category: delta.bullet.category,
+            tags: delta.bullet.tags
+          },
+          delta.sourceSession,
+          config.scoring.decayHalfLifeDays
+        );
 
         existingHashes.add(hash);
         applied = true;
