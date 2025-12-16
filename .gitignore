@@ -53,8 +53,12 @@ bun.lockb
 
 # CASS memory system (local/ephemeral)
 .cass/config.yaml
+.cass/outcomes.jsonl
 diary/*.md
 usage.jsonl
+
+# Beads (synced via beads-sync branch, not main)
+.beads/issues.jsonl
 # macOS
 .DS_Store
 
