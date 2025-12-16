@@ -42,12 +42,20 @@ function findSimilarBullet(
   playbook: Playbook, 
   threshold: number
 ): PlaybookBullet | undefined {
+  const isDeprecated = (b: PlaybookBullet): boolean =>
+    Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
+
+  // Prefer active bullets so a deprecated/blocked match doesn't preempt a valid active match.
   for (const b of playbook.bullets) {
-    // Check deprecated bullets too
-    if (jaccardSimilarity(content, b.content) >= threshold) {
-      return b;
-    }
+    if (isDeprecated(b)) continue;
+    if (jaccardSimilarity(content, b.content) >= threshold) return b;
   }
+
+  // Fallback: consider deprecated bullets (to prevent zombie/resurrection).
+  for (const b of playbook.bullets) {
+    if (jaccardSimilarity(content, b.content) >= threshold) return b;
+  }
+
   return undefined;
 }
 
