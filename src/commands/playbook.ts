@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJsonResult, printJsonError } from "../utils.js";
+import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJsonResult, printJsonError, expandPath } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema, ErrorCode } from "../types.js";
@@ -171,7 +171,7 @@ async function handleBatchAdd(
       rawInput = Buffer.concat(chunks).toString("utf-8");
     } else {
       // Read from file
-      rawInput = await readFile(flags.file!, "utf-8");
+      rawInput = await readFile(expandPath(flags.file!), "utf-8");
     }
   } catch (err: any) {
     result.failed.push({
@@ -368,23 +368,25 @@ export async function playbookCommand(
       return;
     }
 
+    const expandedFilePath = expandPath(filePath);
+
     // Check file exists
-    if (!(await fileExists(filePath))) {
+    if (!(await fileExists(expandedFilePath))) {
       if (flags.json) {
-        printJsonError(`File not found: ${filePath}`, {
+        printJsonError(`File not found: ${expandedFilePath}`, {
           code: ErrorCode.FILE_NOT_FOUND,
-          details: { path: filePath }
+          details: { path: expandedFilePath }
         });
       } else {
-        logError(`File not found: ${filePath}`);
+        logError(`File not found: ${expandedFilePath}`);
       }
       process.exitCode = 1;
       return;
     }
 
     // Read and parse file
-    const content = await readFile(filePath, "utf-8");
-    const format = detectFormat(content, filePath);
+    const content = await readFile(expandedFilePath, "utf-8");
+    const format = detectFormat(content, expandedFilePath);
 
     let importedData: any;
     try {
