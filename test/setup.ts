@@ -24,6 +24,7 @@ beforeAll(() => {
   originalEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   originalEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   originalEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+  originalEnv.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
   // Set test environment flags
   process.env.CASS_MEMORY_TEST = "1";
@@ -45,14 +46,15 @@ afterAll(() => {
     }
   }
 
-  // Ensure the overall test process exits cleanly when the suite passes.
-  process.exitCode = undefined;
+  // Bun does not clear exitCode when assigning `undefined`; set 0 explicitly
+  // so command tests that intentionally set exitCode never force a non-zero exit.
+  process.exitCode = 0;
 });
 
 afterEach(() => {
   // Some command tests intentionally set process.exitCode to simulate CLI failures.
   // Ensure it never leaks across tests (and doesn't force bun test to exit non-zero).
-  process.exitCode = undefined;
+  process.exitCode = 0;
 });
 
 // Global timeout for tests (can be overridden per-test)

@@ -10,7 +10,7 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook } from "../playbook.js";
-import { cassSearch, cassExport, handleCassUnavailable, CassSearchOptions } from "../cass.js";
+import { cassExport, handleCassUnavailable, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
 import { getCliName, expandPath, formatRelativeTime, printJson, printJsonError, printJsonResult } from "../utils.js";
 import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
 import { ErrorCode } from "../types.js";
@@ -181,7 +181,7 @@ async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
         workspace: options.workspace,
         agent: options.agent,
       };
-      const hits = await cassSearch(query, searchOpts, config.cassPath);
+      const { hits } = await safeCassSearchWithDegraded(query, searchOpts, config.cassPath, config);
       for (const hit of hits) {
         if (!sessions.has(hit.source_path)) {
           const session: SessionSample = {
@@ -444,19 +444,34 @@ export async function onboardCommand(
 
   // Handle --reset first (destructive operation)
   if (options.reset) {
-    if (!options.yes && !options.json && process.stdin.isTTY) {
-      // Interactive confirmation
-      const readline = await import("node:readline");
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "), resolve);
-      });
-      rl.close();
-      if (answer.toLowerCase() !== "y") {
-        console.log(chalk.dim("Cancelled."));
+    const canPrompt = Boolean(!options.json && process.stdin.isTTY && process.stdout.isTTY);
+
+    if (!options.yes) {
+      if (canPrompt) {
+        // Interactive confirmation
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "), resolve);
+        });
+        rl.close();
+        if (answer.toLowerCase() !== "y") {
+          console.log(chalk.dim("Cancelled."));
+          return;
+        }
+      } else {
+        if (options.json) {
+          printJsonError("Confirmation required to reset onboarding progress", {
+            code: ErrorCode.MISSING_REQUIRED,
+            details: { missing: "confirmation", hint: "Re-run with --yes" }
+          });
+        } else {
+          console.error(chalk.red("Refusing to reset onboarding progress without --yes"));
+        }
+        process.exitCode = 1;
         return;
       }
     }

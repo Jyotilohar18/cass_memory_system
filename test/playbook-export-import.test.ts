@@ -384,7 +384,7 @@ describe("playbook import command", () => {
       process.env.HOME = dir;
 
       // Reset exitCode before test
-      process.exitCode = undefined;
+      process.exitCode = 0;
 
       const capture = captureConsole();
       try {
@@ -394,7 +394,7 @@ describe("playbook import command", () => {
       }
 
       expect(process.exitCode as number | undefined).toBe(1);
-      process.exitCode = undefined; // Clean up
+      process.exitCode = 0; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);
       expect(result.error).toContain("not found");
@@ -416,7 +416,7 @@ describe("playbook import command", () => {
       await writeFile(importFile, "bullets:\n  - id: missing-closing-quote\n    content: 'unclosed string");
 
       // Reset exitCode before test
-      process.exitCode = undefined;
+      process.exitCode = 0;
 
       const capture = captureConsole();
       try {
@@ -426,7 +426,7 @@ describe("playbook import command", () => {
       }
 
       expect(process.exitCode as number | undefined).toBe(1);
-      process.exitCode = undefined; // Clean up
+      process.exitCode = 0; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);
       expect(result.error).toContain("Parse error");

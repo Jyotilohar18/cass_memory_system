@@ -445,7 +445,7 @@ describe("E2E: CLI init command", () => {
       process.chdir(tempDir);
 
       try {
-        process.exitCode = undefined;
+        process.exitCode = 0;
         const capture = captureConsole();
         try {
           await initCommand({ repo: true });
@@ -459,7 +459,7 @@ describe("E2E: CLI init command", () => {
         );
         expect(hasError).toBe(true);
         expect(process.exitCode as number | undefined).toBe(1);
-        process.exitCode = undefined;
+        process.exitCode = 0;
       } finally {
         process.chdir(originalCwd);
         await rm(tempDir, { recursive: true, force: true });
@@ -475,7 +475,7 @@ describe("E2E: CLI init command", () => {
       process.chdir(tempDir);
 
       try {
-        process.exitCode = undefined;
+        process.exitCode = 0;
         const capture = captureConsole();
         try {
           await initCommand({ repo: true, json: true });
@@ -489,7 +489,7 @@ describe("E2E: CLI init command", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Not in a git repository");
         expect(process.exitCode as number | undefined).toBe(1);
-        process.exitCode = undefined;
+        process.exitCode = 0;
       } finally {
         process.chdir(originalCwd);
         await rm(tempDir, { recursive: true, force: true });

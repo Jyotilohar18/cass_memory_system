@@ -409,7 +409,7 @@ describe("E2E: CLI playbook command", () => {
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         // Reset exitCode before test
-        process.exitCode = undefined;
+        process.exitCode = 0;
 
         const capture = captureConsole();
         try {
@@ -419,7 +419,7 @@ describe("E2E: CLI playbook command", () => {
         }
 
         expect(process.exitCode as number | undefined).toBe(1);
-        process.exitCode = undefined; // Clean up
+        process.exitCode = 0; // Clean up
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(false);
@@ -471,7 +471,7 @@ describe("E2E: CLI playbook command", () => {
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        process.exitCode = undefined;
+        process.exitCode = 0;
         const capture = captureConsole();
         try {
           await playbookCommand("remove", ["nonexistent-id"], {});
@@ -481,7 +481,7 @@ describe("E2E: CLI playbook command", () => {
 
         expect(process.exitCode as number | undefined).toBe(1);
         expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
-        process.exitCode = undefined;
+        process.exitCode = 0;
       });
     });
 
@@ -670,7 +670,7 @@ describe("E2E: CLI playbook command", () => {
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        process.exitCode = undefined;
+        process.exitCode = 0;
         const capture = captureConsole();
         try {
           await playbookCommand("get", ["auth"], { json: true });
@@ -685,7 +685,7 @@ describe("E2E: CLI playbook command", () => {
         expect(result.success).toBe(false);
         expect(result.details?.suggestions).toBeDefined();
         expect(result.details.suggestions.length).toBeGreaterThan(0);
-        process.exitCode = undefined;
+        process.exitCode = 0;
       });
     });
   });
@@ -977,7 +977,7 @@ describe("E2E: CLI playbook command", () => {
         const playbook = createTestPlaybook([]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        process.exitCode = undefined;
+        process.exitCode = 0;
         const capture = captureConsole();
         try {
           await playbookCommand("import", ["/nonexistent/file.json"], { json: true });
@@ -990,7 +990,7 @@ describe("E2E: CLI playbook command", () => {
         const result = JSON.parse(output);
         expect(result.success).toBe(false);
         expect(result.error).toContain("not found");
-        process.exitCode = undefined;
+        process.exitCode = 0;
       });
     });
   });
