@@ -11,8 +11,8 @@
  * - getOnboardProgress() returns summary
  * - filterUnprocessedSessions() filters correctly
  */
-import { describe, test, expect, beforeEach } from "bun:test";
-import { writeFile, readFile, mkdir } from "node:fs/promises";
+import { describe, test, expect } from "bun:test";
+import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createEmptyState,
@@ -24,7 +24,6 @@ import {
   getOnboardProgress,
   filterUnprocessedSessions,
   type OnboardState,
-  type ProcessedSession
 } from "../src/onboard-state.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
