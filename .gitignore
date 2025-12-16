@@ -57,10 +57,7 @@ bun.lockb
 diary/*.md
 usage.jsonl
 
-# Beads (synced via beads-sync branch, not main)
-.beads/issues.jsonl
-# macOS
-.DS_Store
+# Beads (issue tracking is committed; runtime files are ignored via `.beads/.gitignore`)
 
 # Python / uv
 __pycache__/
@@ -103,4 +100,3 @@ htmlcov/
 # Node.js / Bun
 node_modules/
 tsconfig.tsbuildinfo
-

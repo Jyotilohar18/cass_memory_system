@@ -643,25 +643,45 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   }
 
   // 5. LLM/EMBEDDING SYSTEM
+  // Check both environment variables AND config.apiKey for consistency with computeDoctorChecks()
   const availableProviders = getAvailableProviders();
   const currentProvider = config.provider;
   const hasCurrentProvider = availableProviders.includes(currentProvider);
+  const hasConfigApiKey = !!config.apiKey;
+  const hasAnyApiKey = availableProviders.length > 0 || hasConfigApiKey;
 
-  if (availableProviders.length === 0) {
+  if (!hasAnyApiKey) {
+    // No API keys from env vars or config
     checks.push({
       category: "Self-Test",
       item: "LLM System",
       status: "fail",
       message: "No API keys configured",
-      details: { availableProviders: [], currentProvider },
+      details: { availableProviders: [], currentProvider, keySource: "none" },
+    });
+  } else if (hasConfigApiKey) {
+    // API key provided directly in config - this takes precedence
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: "pass",
+      message: `${currentProvider} (${config.model})`,
+      details: {
+        availableProviders,
+        currentProvider,
+        model: config.model,
+        semanticSearchEnabled: config.semanticSearchEnabled,
+        keySource: "config"
+      },
     });
   } else if (!hasCurrentProvider) {
+    // Env var keys available but not for configured provider
     checks.push({
       category: "Self-Test",
       item: "LLM System",
       status: "warn",
       message: `Current provider (${currentProvider}) not available, have: ${availableProviders.join(", ")}`,
-      details: { availableProviders, currentProvider },
+      details: { availableProviders, currentProvider, keySource: "env" },
     });
   } else {
     // Check for API key validity (format check, not actual API call)
@@ -677,7 +697,8 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
           currentProvider,
           model: config.model,
           semanticSearchEnabled: config.semanticSearchEnabled,
-          embeddingModel: config.embeddingModel
+          embeddingModel: config.embeddingModel,
+          keySource: "env"
         },
       });
     } catch (err: any) {
@@ -686,7 +707,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
         item: "LLM System",
         status: "warn",
         message: `${currentProvider}: ${err.message}`,
-        details: { availableProviders, currentProvider, error: err.message },
+        details: { availableProviders, currentProvider, error: err.message, keySource: "env" },
       });
     }
   }
