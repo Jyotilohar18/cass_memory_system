@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expandPath, warn } from "./utils.js";
@@ -9,14 +10,14 @@ const STALE_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
  * Global set of currently held lock paths.
  * Used for cleanup during graceful shutdown.
  */
-const activeLocks = new Set<string>();
+const activeLocks = new Map<string, { owner: string; pid: string }>();
 
 /**
  * Get a copy of currently active lock paths.
  * Useful for debugging and shutdown cleanup.
  */
 export function getActiveLocks(): string[] {
-  return [...activeLocks];
+  return [...activeLocks.keys()];
 }
 
 /**
@@ -26,16 +27,75 @@ export function getActiveLocks(): string[] {
  */
 export async function releaseAllLocks(): Promise<number> {
   let released = 0;
-  for (const lockPath of activeLocks) {
+  for (const [lockPath, meta] of activeLocks) {
     try {
-      await fs.rm(lockPath, { recursive: true, force: true });
-      released++;
+      const removedByOwner = await safeRemoveLockDir(lockPath, { expectedOwner: meta.owner });
+      if (removedByOwner) {
+        released++;
+        continue;
+      }
+
+      // Fall back to PID verification for older/corrupt lock dirs.
+      const removedByPid = await safeRemoveLockDir(lockPath, { expectedPid: meta.pid });
+      if (removedByPid) released++;
     } catch {
       // Best effort - continue with other locks
     }
   }
   activeLocks.clear();
   return released;
+}
+
+function looksLikeLockDirPath(lockPath: string): boolean {
+  return lockPath.endsWith(".lock.d");
+}
+
+async function safeRemoveLockDir(
+  lockPath: string,
+  options: { expectedOwner?: string; expectedPid?: string } = {}
+): Promise<boolean> {
+  if (!looksLikeLockDirPath(lockPath)) {
+    warn(`[lock] Refusing to remove non-lock dir: ${lockPath}`);
+    return false;
+  }
+
+  try {
+    const stat = await fs.lstat(lockPath);
+    if (!stat.isDirectory()) return false;
+  } catch {
+    return false;
+  }
+
+  if (options.expectedOwner) {
+    try {
+      const owner = await fs.readFile(`${lockPath}/owner`, "utf-8");
+      if (owner.trim() !== options.expectedOwner) {
+        warn(`[lock] Lock owner mismatch, not deleting: ${lockPath}`);
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  if (options.expectedPid) {
+    try {
+      const pid = await fs.readFile(`${lockPath}/pid`, "utf-8");
+      if (pid.trim() !== options.expectedPid) {
+        warn(`[lock] Lock PID mismatch, not deleting: ${lockPath}`);
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    await fs.rm(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -56,10 +116,23 @@ async function isLockStale(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_
  */
 async function tryRemoveStaleLock(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_MS): Promise<boolean> {
   try {
-    if (await isLockStale(lockPath, thresholdMs)) {
-      await fs.rm(lockPath, { recursive: true, force: true });
-      warn(`[lock] Removed stale lock: ${lockPath}`);
-      return true;
+    if (!(await isLockStale(lockPath, thresholdMs))) return false;
+    if (activeLocks.has(lockPath)) return false;
+
+    try {
+      const pidRaw = await fs.readFile(`${lockPath}/pid`, "utf-8");
+      if (await safeRemoveLockDir(lockPath, { expectedPid: pidRaw.trim() })) {
+        warn(`[lock] Removed stale lock: ${lockPath}`);
+        return true;
+      }
+      return false;
+    } catch {
+      // If the PID file is missing/corrupt, fall back to staleness-only cleanup.
+      if (await safeRemoveLockDir(lockPath)) {
+        warn(`[lock] Removed stale lock (missing/corrupt PID): ${lockPath}`);
+        return true;
+      }
+      return false;
     }
   } catch {
     // Failed to remove
@@ -90,7 +163,7 @@ async function tryRemoveAbandonedLock(lockPath: string): Promise<boolean> {
     const pid = Number.parseInt(pidRaw.trim(), 10);
     if (pidIsRunning(pid)) return false;
 
-    await fs.rm(lockPath, { recursive: true, force: true });
+    if (!(await safeRemoveLockDir(lockPath, { expectedPid: pidRaw.trim() }))) return false;
     warn(`[lock] Removed abandoned lock (dead PID ${pid}): ${lockPath}`);
     return true;
   } catch {
@@ -117,6 +190,7 @@ export async function withLock<T>(
   // Use .lock.d to clearly indicate directory
   const lockPath = `${expandedTargetPath}.lock.d`;
   const pid = process.pid.toString();
+  const owner = crypto.randomUUID();
 
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -124,11 +198,14 @@ export async function withLock<T>(
       await fs.mkdir(lockPath);
 
       // Track this lock for graceful shutdown cleanup
-      activeLocks.add(lockPath);
+      activeLocks.set(lockPath, { owner, pid });
 
       // Write metadata inside (best effort, doesn't affect lock validity)
       try {
         await fs.writeFile(`${lockPath}/pid`, pid);
+      } catch {}
+      try {
+        await fs.writeFile(`${lockPath}/owner`, owner);
       } catch {}
 
       // Start heartbeat to keep lock fresh during long operations
@@ -148,32 +225,19 @@ export async function withLock<T>(
         return await operation();
       } finally {
         clearInterval(heartbeat);
-        
+
         // Remove from tracking before releasing
         activeLocks.delete(lockPath);
-        
-        // Safety check: Verify we still own the lock before deleting
-        // This prevents deleting a lock that was stolen by another process (due to staleness)
-        let safeToDelete = false;
-        try {
-          const content = await fs.readFile(`${lockPath}/pid`, "utf-8");
-          if (content.trim() === pid) {
-            safeToDelete = true;
-          } else {
-            warn(`[lock] Lock stolen by PID ${content.trim()}, not deleting: ${lockPath}`);
-          }
-        } catch {
-          // If we can't read the PID file (ENOENT), it implies the lock structure is gone or corrupted.
-          // It's unsafe to delete the directory as it might be a fresh lock from another process 
-          // (extremely narrow race: mkdir -> context switch -> us -> rm).
-          // We default to NOT deleting (safeToDelete = false).
-          // If we leave a zombie directory, the stale lock cleaner will handle it later.
-        }
 
-        if (safeToDelete) {
-          try {
-            await fs.rm(lockPath, { recursive: true, force: true });
-          } catch {}
+        // Safety check: only delete if we still own the lock directory.
+        // This prevents deleting a lock that was stolen by another process due to stale cleanup.
+        if (!(await safeRemoveLockDir(lockPath, { expectedOwner: owner }))) {
+          // Fall back to PID check for older lock dirs that might not have an owner marker.
+          const removed = await safeRemoveLockDir(lockPath, { expectedPid: pid });
+          if (!removed) {
+            // Leave the directory; stale/abandoned cleanup will handle it later.
+            warn(`[lock] Could not verify lock ownership; leaving lock dir: ${lockPath}`);
+          }
         }
       }
     } catch (err: any) {
