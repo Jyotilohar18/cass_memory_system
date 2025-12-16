@@ -11,6 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { resolveGlobalDir, atomicWrite, warn } from "./utils.js";
+import { withLock } from "./lock.js";
 
 // Schema version for future migrations
 const STATE_VERSION = 1;
@@ -144,38 +145,44 @@ export async function markSessionProcessed(
   rulesExtracted: number,
   options: { skipped?: boolean } = {}
 ): Promise<OnboardState> {
-  const state = await loadOnboardState();
-  const normalizedPath = path.resolve(sessionPath);
+  const statePath = getStatePath();
+  return await withLock(statePath, async () => {
+    const state = await loadOnboardState();
+    const normalizedPath = path.resolve(sessionPath);
 
-  // Check if already processed (idempotent)
-  const existingIndex = state.processedSessions.findIndex(
-    (s) => path.resolve(s.path) === normalizedPath
-  );
+    // Check if already processed (idempotent)
+    const existingIndex = state.processedSessions.findIndex(
+      (s) => path.resolve(s.path) === normalizedPath
+    );
 
-  const entry: ProcessedSession = {
-    path: sessionPath,
-    processedAt: new Date().toISOString(),
-    rulesExtracted,
-    skipped: options.skipped,
-  };
+    const entry: ProcessedSession = {
+      path: sessionPath,
+      processedAt: new Date().toISOString(),
+      rulesExtracted,
+      skipped: options.skipped,
+    };
 
-  if (existingIndex >= 0) {
-    // Update existing entry
-    state.processedSessions[existingIndex] = entry;
-  } else {
-    // Add new entry
-    state.processedSessions.push(entry);
-  }
+    if (existingIndex >= 0) {
+      // Update existing entry
+      state.processedSessions[existingIndex] = entry;
+    } else {
+      // Add new entry
+      state.processedSessions.push(entry);
+    }
 
-  await saveOnboardState(state);
-  return state;
+    await saveOnboardState(state);
+    return state;
+  });
 }
 
 /**
  * Reset onboarding state (overwrite with empty state).
  */
 export async function resetOnboardState(): Promise<void> {
-  await saveOnboardState(createEmptyState());
+  const statePath = getStatePath();
+  await withLock(statePath, async () => {
+    await saveOnboardState(createEmptyState());
+  });
 }
 
 /**
