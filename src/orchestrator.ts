@@ -1,4 +1,4 @@
-import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry } from "./types.js";
+import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry, PlaybookBullet } from "./types.js";
 import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks } from "./playbook.js";
 import { ProcessedLog, getProcessedLogPath } from "./tracking.js";
 import { findUnprocessedSessions, cassExport } from "./cass.js";
@@ -6,7 +6,7 @@ import { generateDiary } from "./diary.js";
 import { reflectOnSession } from "./reflect.js";
 import { validateDelta } from "./validate.js";
 import { curatePlaybook } from "./curate.js";
-import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId } from "./utils.js";
+import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId, hashContent, jaccardSimilarity } from "./utils.js";
 import { withLock } from "./lock.js";
 import path from "node:path";
 
@@ -35,6 +35,30 @@ export type ReflectionProgressEvent =
   | { phase: "session_skip"; index: number; totalSessions: number; sessionPath: string; reason: string }
   | { phase: "session_done"; index: number; totalSessions: number; sessionPath: string; deltasGenerated: number }
   | { phase: "session_error"; index: number; totalSessions: number; sessionPath: string; error: string };
+
+function isActiveBullet(bullet: PlaybookBullet): boolean {
+  return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
+}
+
+function findFirstHashMatch(playbook: Playbook, content: string): PlaybookBullet | undefined {
+  const h = hashContent(content);
+  return playbook.bullets.find((b) => hashContent(b.content) === h);
+}
+
+function findBestActiveSimilarBullet(
+  playbook: Playbook,
+  content: string,
+  threshold: number
+): PlaybookBullet | undefined {
+  let best: { bullet: PlaybookBullet; score: number } | undefined;
+  for (const b of playbook.bullets) {
+    if (!isActiveBullet(b)) continue;
+    const score = jaccardSimilarity(content, b.content);
+    if (score < threshold) continue;
+    if (!best || score > best.score) best = { bullet: b, score };
+  }
+  return best?.bullet;
+}
 
 /**
  * Core logic for the reflection loop.
@@ -215,34 +239,67 @@ export async function orchestrateReflection(
       const processedDeltas: PlaybookDelta[] = [];
       
       for (const delta of allDeltas) {
-        if (delta.type === "merge") {
-          const newBulletId = generateBulletId();
-          
-          // 1. Create the new merged rule
-          processedDeltas.push({
-            type: "add",
-            bullet: {
-              id: newBulletId,  // Pre-assign ID so deprecate deltas can reference it
-              content: delta.mergedContent,
-              category: "merged", // Default category, curation might refine or we could infer
-              tags: []
-            },
-            // Merge deltas don't carry sourceSession, so we use a placeholder
-            sourceSession: "merged-operation",
-            reason: delta.reason || "Merged from existing rules"
-          });
+        if (delta.type !== "merge") {
+          processedDeltas.push(delta);
+          continue;
+        }
 
-          // 2. Deprecate the old rules
+        const mergedContent = delta.mergedContent;
+        const threshold = typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
+
+        // If the merged content already exists (or is very similar), prefer deprecating into it
+        // rather than creating a duplicate replacement that curation might skip.
+        const exactMatch = findFirstHashMatch(freshMerged, mergedContent);
+        if (exactMatch && !isActiveBullet(exactMatch)) {
+          warn(
+            `[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`
+          );
+          continue;
+        }
+
+        const replacement =
+          exactMatch && isActiveBullet(exactMatch)
+            ? exactMatch
+            : findBestActiveSimilarBullet(freshMerged, mergedContent, threshold);
+
+        if (replacement) {
           for (const id of delta.bulletIds) {
+            // If one of the merged bullets is already the best replacement, keep it active and only deprecate the others.
+            if (id === replacement.id) continue;
             processedDeltas.push({
               type: "deprecate",
               bulletId: id,
-              reason: `Merged into ${newBulletId}`,
-              replacedBy: newBulletId
+              reason: `Merged into existing ${replacement.id}`,
+              replacedBy: replacement.id
             });
           }
-        } else {
-          processedDeltas.push(delta);
+          continue;
+        }
+
+        const newBulletId = generateBulletId();
+
+        // 1. Create the new merged rule
+        processedDeltas.push({
+          type: "add",
+          bullet: {
+            id: newBulletId, // Pre-assign ID so deprecate deltas can reference it
+            content: mergedContent,
+            category: "merged",
+            tags: []
+          },
+          // Merge deltas don't carry sourceSession, so we use a placeholder
+          sourceSession: "merged-operation",
+          reason: delta.reason || "Merged from existing rules"
+        });
+
+        // 2. Deprecate the old rules
+        for (const id of delta.bulletIds) {
+          processedDeltas.push({
+            type: "deprecate",
+            bulletId: id,
+            reason: `Merged into ${newBulletId}`,
+            replacedBy: newBulletId
+          });
         }
       }
 

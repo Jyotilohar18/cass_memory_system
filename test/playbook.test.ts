@@ -464,6 +464,27 @@ describe("addBullet", () => {
     expect(pb.bullets.length).toBe(1);
   });
 
+  it("respects provided id when unique", () => {
+    const pb = createEmptyPlaybook();
+    const bullet = addBullet(
+      pb,
+      { id: "b-custom-1", content: "New rule", category: "testing" },
+      "/path/session.jsonl"
+    );
+
+    expect(bullet.id).toBe("b-custom-1");
+    expect(pb.bullets.length).toBe(1);
+  });
+
+  it("throws when provided id already exists", () => {
+    const pb = createEmptyPlaybook();
+    addBullet(pb, { id: "b-collision", content: "Rule 1", category: "testing" }, "/path/session.jsonl");
+
+    expect(() => {
+      addBullet(pb, { id: "b-collision", content: "Rule 2", category: "testing" }, "/path/session.jsonl");
+    }).toThrow();
+  });
+
   it("sets content and category from data", () => {
     const pb = createEmptyPlaybook();
     const bullet = addBullet(

@@ -435,9 +435,14 @@ export function addBullet(
   defaultDecayHalfLifeDays: number = 90
 ): PlaybookBullet {
   const agent = extractAgentFromPath(sourceSession); 
+  const requestedId =
+    typeof data.id === "string" && data.id.trim() !== "" ? data.id.trim() : undefined;
+  if (requestedId && playbook.bullets.some((b) => b.id === requestedId)) {
+    throw new Error(`Bullet id already exists: ${requestedId}`);
+  }
 
   const newBullet: PlaybookBullet = {
-    id: data.id || generateBulletId(),
+    id: requestedId ?? generateBulletId(),
     content: data.content,
     category: data.category,
     kind: data.kind || "workflow_rule",
