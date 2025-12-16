@@ -220,8 +220,9 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     maturity: "candidate", 
     createdAt: now(),
     updatedAt: now(),
-    sourceSessions: bullet.sourceSessions,
-    sourceAgents: bullet.sourceAgents,
+    // Copy provenance arrays to avoid aliasing mutations between bullets.
+    sourceSessions: [...(bullet.sourceSessions || [])],
+    sourceAgents: [...(bullet.sourceAgents || [])],
     tags: [...bullet.tags, "inverted", "anti-pattern"],
     feedbackEvents: [],
     helpfulCount: 0,

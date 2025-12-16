@@ -621,6 +621,37 @@ describe("curatePlaybook", () => {
       expect(antiPattern?.tags).toContain("inverted");
     });
 
+    it("does not alias provenance arrays when inverting", () => {
+      const now = new Date().toISOString();
+      const harmfulBullet = createTestBullet({
+        id: "harmful-alias",
+        content: "Use var everywhere",
+        category: "style",
+        harmfulCount: 3,
+        helpfulCount: 0,
+        sourceSessions: ["/sessions/s1.jsonl"],
+        sourceAgents: ["claude"],
+        feedbackEvents: Array(3).fill(null).map(() =>
+          createFeedbackEvent("harmful", { timestamp: now })
+        )
+      });
+      const playbook = createTestPlaybook([harmfulBullet]);
+
+      const result = curatePlaybook(playbook, [], config);
+
+      const original = result.playbook.bullets.find(b => b.id === "harmful-alias");
+      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      expect(original).toBeDefined();
+      expect(antiPattern).toBeDefined();
+
+      // Mutating the deprecated original should not affect the new anti-pattern.
+      original?.sourceSessions.push("/sessions/s2.jsonl");
+      original?.sourceAgents.push("cursor");
+
+      expect(antiPattern?.sourceSessions).toEqual(["/sessions/s1.jsonl"]);
+      expect(antiPattern?.sourceAgents).toEqual(["claude"]);
+    });
+
     it("inverts at prune threshold even with slight decay (float tolerance)", () => {
       const slightlyOld = new Date(Date.now() - 1000).toISOString(); // 1s ago -> decayed values slightly < 1.0
       const harmfulBullet = createTestBullet({
