@@ -15,11 +15,12 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import yaml from "yaml";
 import { createTestLogger } from "./helpers/logger.js";
+import { makeCassStub } from "./helpers/temp.js";
 
 const CM_PATH = join(import.meta.dir, "..", "src", "cm.ts");
 
@@ -307,6 +308,55 @@ describe("E2E: New User Onboarding", () => {
 
       const listResponse = JSON.parse(result.stdout);
       expect(listResponse).toEqual({ success: true, bullets: [] });
+    });
+  });
+
+  describe("Onboard Command Safety", () => {
+    test("onboard reset --json requires --yes", () => {
+      const result = runCm(["onboard", "reset", "--json"], testDir);
+      expect(result.exitCode).toBe(1);
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.success).toBe(false);
+      expect(parsed.code).toBe("MISSING_REQUIRED");
+    });
+
+    test("onboard sample redacts secrets from cass snippets", async () => {
+      // Initialize config/playbook first
+      runCm(["init", "--json"], testDir);
+
+      // Create a cass stub that returns a snippet containing an obvious secret.
+      const secretValue = "ABCDEFGHIJKLMNOPQRSTUVWX1234";
+      const searchOut = JSON.stringify([
+        {
+          source_path: "/sessions/s1.jsonl",
+          line_number: 1,
+          agent: "stub",
+          workspace: "/tmp/ws",
+          snippet: `apiKey: ${secretValue}`,
+          score: 0.9,
+        },
+      ]);
+
+      const cassStubPath = await makeCassStub(testDir, { search: searchOut }, "", "cass-stub");
+
+      // Point config.cassPath at the stub so onboarding sampling uses it.
+      const configPath = join(testDir, ".cass-memory", "config.json");
+      const configJson = JSON.parse(readFileSync(configPath, "utf-8")) as any;
+      configJson.cassPath = cassStubPath;
+      writeFileSync(configPath, JSON.stringify(configJson, null, 2), "utf-8");
+
+      const sample = runCm(["onboard", "sample", "--limit", "1", "--json"], testDir);
+      expect(sample.exitCode).toBe(0);
+
+      const sampleJson = JSON.parse(sample.stdout);
+      expect(sampleJson.success).toBe(true);
+      expect(Array.isArray(sampleJson.sessions)).toBe(true);
+      expect(sampleJson.sessions.length).toBeGreaterThan(0);
+
+      const snippet = String(sampleJson.sessions[0]?.snippet || "");
+      expect(snippet).toContain("[API_KEY]");
+      expect(snippet).not.toContain(secretValue);
     });
   });
 
