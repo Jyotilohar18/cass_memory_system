@@ -873,7 +873,7 @@ export function getErrorCategoryAction(category: ErrorCategory): string {
     case "llm":
       return "Check your API key and rate limits";
     case "internal":
-      return "This may be a bug. Please report at https://github.com/anthropics/cass-memory/issues";
+      return "This may be a bug. Please report at https://github.com/Dicklesworthstone/cass_memory_system/issues";
   }
 }
 
@@ -1778,6 +1778,17 @@ export function formatLastHelpful(bullet: {
  */
 const PROBLEM_TERMS = ["error", "fix", "bug", "issue", "problem", "fail", "debug"];
 
+function shellEscapeForUserCommand(text: string): string {
+  // These suggestions are meant to be copy/pasted. Never embed untrusted text
+  // in double quotes where shells would interpret `$()` / backticks / `$var`.
+  if (process.platform === "win32") {
+    // PowerShell single-quote escaping: ' -> ''
+    return `'${text.replace(/'/g, "''")}'`;
+  }
+  // POSIX shells: single-quote escape via: ' -> '"'"'
+  return "'" + text.replace(/'/g, "'\"'\"'") + "'";
+}
+
 /**
  * Generate human-readable cass search suggestions for follow-up investigation.
  *
@@ -1795,9 +1806,9 @@ const PROBLEM_TERMS = ["error", "fix", "bug", "issue", "problem", "fail", "debug
  * generateSuggestedQueries("Fix authentication timeout bug", ["authentication", "timeout", "token"])
  * // Returns:
  * // [
- * //   'cass search "authentication timeout" --days 30',
- * //   'cass search "token error" --days 60',
- * //   'cass search "authentication" --days 90',
+ * //   "cass search 'authentication timeout' --days 30",
+ * //   "cass search 'token error' --days 60",
+ * //   "cass search 'authentication' --days 90",
  * //   ...
  * // ]
  */
@@ -1813,14 +1824,15 @@ export function generateSuggestedQueries(
   // Helper to add query if not duplicate
   const addQuery = (query: string, days: number, agent?: string): void => {
     if (queries.length >= maxSuggestions) return;
+    const cleaned = query.trim();
+    if (!cleaned) return;
 
-    // Escape quotes in query
-    const escapedQuery = query.replace(/"/g, '\\"');
-    const key = `${escapedQuery}-${days}-${agent || ""}`;
+    const key = `${cleaned}-${days}-${agent || ""}`;
 
     if (!seenQueries.has(key)) {
       seenQueries.add(key);
-      let cmd = `cass search "${escapedQuery}" --days ${days}`;
+      const quotedQuery = shellEscapeForUserCommand(cleaned);
+      let cmd = `cass search ${quotedQuery} --days ${days}`;
       if (agent) cmd += ` --agent ${agent}`;
       queries.push(cmd);
     }
