@@ -228,7 +228,7 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     console.log(chalk.gray("─".repeat(40)));
     for (let i = 0; i < result.sourceSessions.length; i++) {
       const s = result.sourceSessions[i];
-      const pathShort = s.path.split("/").slice(-2).join("/");
+      const pathShort = s.path.split(/[\\/]/).slice(-2).join("/");
       console.log(`  ${i + 1}. ${chalk.blue(pathShort)}${s.date ? ` (${s.date})` : ""}`);
       if (s.snippet) {
         console.log(chalk.gray(`     "${truncate(s.snippet, 60)}"`));
@@ -267,7 +267,7 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     console.log(chalk.gray("─".repeat(40)));
     for (const f of result.feedbackHistory.slice(0, verbose ? 10 : 5)) {
       const feedbackIcon = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
-      console.log(`  ${f.timestamp.slice(0, 10)}: ${feedbackIcon} ${f.type}${f.sessionPath ? ` (${f.sessionPath.split("/").pop()})` : ""}`);
+      console.log(`  ${f.timestamp.slice(0, 10)}: ${feedbackIcon} ${f.type}${f.sessionPath ? ` (${f.sessionPath.split(/[\\/]/).pop()})` : ""}`);
     }
     if (result.feedbackHistory.length > (verbose ? 10 : 5)) {
       console.log(chalk.gray(`  ... (${result.feedbackHistory.length - (verbose ? 10 : 5)} more)`));
