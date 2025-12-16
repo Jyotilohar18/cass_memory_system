@@ -419,6 +419,17 @@ async function sshCassSearch(
   query: string,
   options: CassSearchOptions
 ): Promise<CassHit[]> {
+  const sshTarget = typeof host.host === "string" ? host.host.trim() : "";
+  if (!sshTarget) {
+    throw new Error("Invalid remoteCass host: empty ssh target");
+  }
+  if (sshTarget.startsWith("-")) {
+    throw new Error(`Invalid remoteCass host '${sshTarget}': ssh target must not start with '-'`);
+  }
+  if (/\s/.test(sshTarget)) {
+    throw new Error(`Invalid remoteCass host '${sshTarget}': ssh target must not contain whitespace`);
+  }
+
   const commandArgs = ["cass", ...buildCassSearchArgs(query, options)];
   const remoteCommand = commandArgs.map(shellEscapePosix).join(" ");
   const sshArgs = [
@@ -426,7 +437,7 @@ async function sshCassSearch(
     "BatchMode=yes",
     "-o",
     "ConnectTimeout=5",
-    host.host,
+    sshTarget,
     remoteCommand,
   ];
 
@@ -525,6 +536,15 @@ function classifyRemoteCassSearchFailure(
   const code = (err as any)?.code;
   const display = label && label !== sshTarget ? `${label} (${sshTarget})` : sshTarget;
 
+  if (lower.includes("invalid remotecass host")) {
+    return {
+      available: false,
+      reason: "OTHER",
+      message: `remote(${display}): invalid ssh target; check config.remoteCass.hosts.`,
+      suggestedFix: ["Edit config.remoteCass.hosts to a valid ssh target (no whitespace, must not start with '-')"],
+    };
+  }
+
   if (
     code === 255 ||
     lower.includes("could not resolve hostname") ||
@@ -563,7 +583,7 @@ function classifyRemoteCassSearchFailure(
       reason: "TIMEOUT",
       message: `remote(${display}): ${base.message}`,
       suggestedFix: [
-        `ssh ${sshTarget} cass search "${query.replace(/"/g, '\\"')}" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
+        `ssh ${sshTarget} cass search "<query>" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
         `ssh ${sshTarget} cass health`,
       ],
     };
@@ -715,7 +735,7 @@ export async function safeCassSearchWithDegraded(
     const degraded = classifyCassSearchError(err, query);
     if (degraded.reason === "TIMEOUT") {
       degraded.suggestedFix = [
-        `cass search "${query.replace(/"/g, '\\"')}" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
+        `cass search "<query>" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
         "cass health",
       ];
     }
@@ -789,9 +809,10 @@ export async function cassExport(
   config?: Config
 ): Promise<string | null> {
   const args = ["export", sessionPath, "--format", format];
+  const resolvedCassPath = expandPath(cassPath);
 
   try {
-    const { stdout } = await execFileAsync(cassPath, args, { maxBuffer: 50 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(resolvedCassPath, args, { maxBuffer: 50 * 1024 * 1024 });
     const activeConfig = config || await loadConfig();
     const sanitizeConfig = getSanitizeConfig(activeConfig);
     const compiledConfig = {
@@ -882,9 +903,10 @@ export async function cassExpand(
   config?: Config
 ): Promise<string | null> {
   const args = ["expand", sessionPath, "-n", lineNumber.toString(), "-C", contextLines.toString(), "--robot"];
+  const resolvedCassPath = expandPath(cassPath);
 
   try {
-    const { stdout } = await execFileAsync(cassPath, args);
+    const { stdout } = await execFileAsync(resolvedCassPath, args);
 
     // Sanitize expanded output
     const activeConfig = config || await loadConfig();
@@ -902,8 +924,9 @@ export async function cassExpand(
 // --- Stats & Timeline ---
 
 export async function cassStats(cassPath = "cass"): Promise<any | null> {
+  const resolvedCassPath = expandPath(cassPath);
   try {
-    const { stdout } = await execFileAsync(cassPath, ["stats", "--json"]);
+    const { stdout } = await execFileAsync(resolvedCassPath, ["stats", "--json"]);
     const parsed = parseCassJsonOutput(stdout);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -915,8 +938,9 @@ export async function cassTimeline(
   days: number,
   cassPath = "cass"
 ): Promise<CassTimelineResult> {
+  const resolvedCassPath = expandPath(cassPath);
   try {
-    const { stdout } = await execFileAsync(cassPath, ["timeline", "--days", days.toString(), "--json"]);
+    const { stdout } = await execFileAsync(resolvedCassPath, ["timeline", "--days", days.toString(), "--json"]);
     const parsed = parseCassJsonOutput(stdout);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as CassTimelineResult)
