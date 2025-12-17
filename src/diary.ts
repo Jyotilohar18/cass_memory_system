@@ -496,7 +496,14 @@ export async function findDiaryBySession(
 
 export async function loadDiary(idOrPath: string, config: Config): Promise<DiaryEntry | null> {
   let fullPath = idOrPath;
-  if (!idOrPath.includes("/") && !idOrPath.endsWith(".json")) {
+  const looksLikePath =
+    idOrPath.endsWith(".json") ||
+    idOrPath.includes("/") ||
+    idOrPath.includes("\\") ||
+    path.isAbsolute(idOrPath) ||
+    path.win32.isAbsolute(idOrPath);
+
+  if (!looksLikePath) {
     fullPath = path.join(expandPath(config.diaryDir), `${idOrPath}.json`);
   }
 

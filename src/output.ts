@@ -7,10 +7,14 @@ export type OutputStyle = {
 export function getOutputStyle(): OutputStyle {
   const color = process.env.NO_COLOR === undefined;
   const emoji = process.env.CASS_MEMORY_NO_EMOJI === undefined;
+  const widthOverrideRaw = process.env.CASS_MEMORY_WIDTH?.trim();
+  const widthOverride = widthOverrideRaw ? Number.parseInt(widthOverrideRaw, 10) : NaN;
   const width =
-    typeof process.stdout.columns === "number" && process.stdout.columns > 0
-      ? process.stdout.columns
-      : 80;
+    Number.isFinite(widthOverride) && widthOverride > 0
+      ? Math.floor(widthOverride)
+      : typeof process.stdout.columns === "number" && process.stdout.columns > 0
+        ? process.stdout.columns
+        : 80;
 
   return { color, emoji, width };
 }

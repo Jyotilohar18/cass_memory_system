@@ -5,11 +5,29 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateObject, type LanguageModel, type GenerateObjectResult } from "ai";
+import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import type { Config, DiaryEntry } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
 import { truncateForContext, warn } from "./utils.js";
+
+export interface LLMUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface LLMGenerateObjectResult<T> {
+  object: T;
+  usage?: LLMUsage;
+}
+
+export interface LLMIO {
+  generateObject: <T>(options: any) => Promise<LLMGenerateObjectResult<T>>;
+}
+
+const DEFAULT_LLM_IO: LLMIO = {
+  generateObject: generateObject as any,
+};
 
 /**
  * Supported LLM provider names
@@ -374,17 +392,18 @@ export async function llmWithRetry<T>(
 async function monitoredGenerateObject<T>(
   options: any,
   config: Config,
-  context: string
-): Promise<GenerateObjectResult<T>> {
+  context: string,
+  io: LLMIO = DEFAULT_LLM_IO
+): Promise<LLMGenerateObjectResult<T>> {
   const budgetCheck = await checkBudget(config);
   if (!budgetCheck.allowed) {
     throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
   }
 
-  const result = await generateObject({
+  const result = await io.generateObject<T>({
     ...options,
     // Ensure schema is passed through if present in options, typically it is
-  }) as GenerateObjectResult<T>;
+  });
 
   if (result.usage) {
     await recordCost(config, {
@@ -403,7 +422,8 @@ export async function generateObjectSafe<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
   config: Config,
-  maxAttempts: number = 3
+  maxAttempts: number = 3,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
   const llmConfig: LLMConfig = {
     provider: config.provider as LLMProvider,
@@ -426,7 +446,7 @@ export async function generateObjectSafe<T>(
         schema,
         prompt: enhancedPrompt,
         temperature
-      }, config, "generateObjectSafe");
+      }, config, "generateObjectSafe", io);
 
       return result.object;
     } catch (err: any) {
@@ -456,8 +476,10 @@ export async function generateObjectSafe<T>(
 
 // --- Operations ---
 
-// Optional reflector stubs for offline/tests (set env CM_REFLECTOR_STUBS to JSON array of per-iteration delta arrays)
-let REFLECTOR_STUBS: any[][] | null = null;
+// Optional reflector stubs for offline/tests.
+// Set `CM_REFLECTOR_STUBS` to a JSON array of per-iteration reflector outputs
+// (typically objects like `{ deltas: [...] }`).
+let REFLECTOR_STUBS: unknown[] | null = null;
 let REFLECTOR_STUB_INDEX = 0;
 
 export function __resetReflectorStubsForTest(): void {
@@ -472,7 +494,7 @@ function nextReflectorStub<T>(): T | null {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        REFLECTOR_STUBS = parsed as any[][];
+        REFLECTOR_STUBS = parsed as unknown[];
       }
     } catch {
       return null;
@@ -489,7 +511,8 @@ export async function extractDiary<T>(
   schema: z.ZodSchema<T>,
   sessionContent: string,
   metadata: { sessionPath: string; agent: string; workspace?: string },
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
   const truncatedContent = truncateForContext(sessionContent, { maxChars: 50000 });
 
@@ -501,7 +524,7 @@ export async function extractDiary<T>(
   });
 
   return llmWithRetry(async () => {
-    return generateObjectSafe(schema, prompt, config);
+    return generateObjectSafe(schema, prompt, config, 3, io);
   }, "extractDiary");
 }
 
@@ -511,7 +534,8 @@ export async function runReflector<T>(
   existingBullets: string,
   cassHistory: string,
   iteration: number,
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
   const stub = nextReflectorStub<T>();
   if (stub) {
@@ -542,7 +566,7 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
   });
 
   return llmWithRetry(async () => {
-    return generateObjectSafe(schema, prompt, config);
+    return generateObjectSafe(schema, prompt, config, 3, io);
   }, "runReflector");
 }
 
@@ -572,7 +596,8 @@ type ValidatorOutput = z.infer<typeof ValidatorOutputSchema>;
 export async function runValidator(
   proposedRule: string,
   formattedEvidence: string,
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<ValidatorResult> {
   const safeEvidence = truncateForContext(formattedEvidence, { maxChars: 30000 });
 
@@ -582,7 +607,7 @@ export async function runValidator(
   });
 
   return llmWithRetry(async () => {
-    const object = await generateObjectSafe(ValidatorOutputSchema, prompt, config);
+    const object = await generateObjectSafe(ValidatorOutputSchema, prompt, config, 3, io);
 
     const supporting = object.evidence?.supporting ?? [];
     const contradicting = object.evidence?.contradicting ?? [];
@@ -608,7 +633,8 @@ export async function generateContext(
   bullets: string,
   history: string,
   deprecatedPatterns: string,
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<string> {
   const prompt = fillPrompt(PROMPTS.context, {
     task: truncateForContext(task, { maxChars: 5000 }),
@@ -618,14 +644,15 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const result = await generateObjectSafe(z.object({ briefing: z.string() }), prompt, config);
+    const result = await generateObjectSafe(z.object({ briefing: z.string() }), prompt, config, 3, io);
     return result.briefing;
   }, "generateContext");
 }
 
 export async function generateSearchQueries(
   task: string,
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<string[]> {
   const prompt = `Given this task: ${truncateForContext(task, { maxChars: 5000 })}
 
@@ -641,7 +668,9 @@ Make queries specific enough to be useful but broad enough to match variations.`
     const result = await generateObjectSafe(
       z.object({ queries: z.array(z.string()).max(5) }), 
       prompt, 
-      config
+      config,
+      3,
+      io
     );
     return result.queries;
   }, "generateSearchQueries");
@@ -660,16 +689,20 @@ const FALLBACK_MODELS: Record<LLMProvider, string> = {
 export async function llmWithFallback<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
-  config: Config
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
   const primaryProvider = config.provider as LLMProvider;
   const primaryModel = config.model;
 
-  const availableProviders = getAvailableProviders();
-  const providerOrder: Array<{ provider: LLMProvider; model: string }> = [];
+  const apiKeyOverride =
+    typeof config.apiKey === "string" && config.apiKey.trim() !== "" ? config.apiKey.trim() : undefined;
 
-  if (availableProviders.includes(primaryProvider)) {
-    providerOrder.push({ provider: primaryProvider, model: primaryModel });
+  const availableProviders = getAvailableProviders();
+  const providerOrder: Array<{ provider: LLMProvider; model: string; apiKey?: string }> = [];
+
+  if (availableProviders.includes(primaryProvider) || apiKeyOverride !== undefined) {
+    providerOrder.push({ provider: primaryProvider, model: primaryModel, apiKey: apiKeyOverride });
   }
 
   for (const fallback of FALLBACK_ORDER) {
@@ -687,18 +720,19 @@ export async function llmWithFallback<T>(
   const errors: Array<{ provider: string; error: string }> = [];
 
   for (let i = 0; i < providerOrder.length; i++) {
-    const { provider, model } = providerOrder[i];
+    const { provider, model, apiKey } = providerOrder[i];
     const isLastProvider = i === providerOrder.length - 1;
 
     try {
-      const llmModel = getModel({ provider, model });
+      const llmModel = getModel({ provider, model, apiKey });
+      const costConfig: Config = { ...config, provider, model, apiKey };
 
-      const result = await monitoredGenerateObject<T> ({
+      const result = await monitoredGenerateObject<T>({
         model: llmModel,
         schema,
         prompt,
         temperature: 0.3,
-      }, config, "llmWithFallback");
+      }, costConfig, "llmWithFallback", io);
 
       return result.object;
     } catch (err: any) {

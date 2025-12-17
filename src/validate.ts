@@ -7,7 +7,7 @@ import {
   DecisionLogEntry
 } from "./types.js";
 import { runValidator, ValidatorResult } from "./llm.js";
-import { safeCassSearch } from "./cass.js";
+import { safeCassSearch, type CassRunner } from "./cass.js";
 import { extractKeywords, log, now } from "./utils.js";
 
 // --- Verdict Normalization ---
@@ -58,7 +58,8 @@ function matchesPatterns(text: string, patterns: RegExp[]): boolean {
 
 export async function evidenceCountGate(
   content: string,
-  config: Config
+  config: Config,
+  runner?: CassRunner
 ): Promise<EvidenceGateResult> {
   const keywords = extractKeywords(content);
   if (keywords.length === 0) {
@@ -72,10 +73,26 @@ export async function evidenceCountGate(
     };
   }
 
-  const hits = await safeCassSearch(keywords.join(" "), {
-    limit: 20,
-    days: config.validationLookbackDays
-  }, config.cassPath, config);
+  const hits = runner
+    ? await safeCassSearch(
+        keywords.join(" "),
+        {
+          limit: 20,
+          days: config.validationLookbackDays,
+        },
+        config.cassPath,
+        config,
+        runner
+      )
+    : await safeCassSearch(
+        keywords.join(" "),
+        {
+          limit: 20,
+          days: config.validationLookbackDays,
+        },
+        config.cassPath,
+        config
+      );
 
   const sessions = new Set<string>();
   const successSessions = new Set<string>();

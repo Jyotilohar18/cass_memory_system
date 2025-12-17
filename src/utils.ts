@@ -1383,6 +1383,25 @@ export function truncate(text: string, maxLen: number): string {
 }
 
 /**
+ * Truncate text to `maxLen` characters, appending an indicator *outside* the limit
+ * so callers can show the full slice plus an explicit truncation marker.
+ *
+ * Example:
+ * - truncate("abcdef", 4)            -> "a..."
+ * - truncateWithIndicator("abcdef", 4) -> "abcd..."
+ */
+export function truncateWithIndicator(
+  text: string,
+  maxLen: number,
+  indicator: string = "..."
+): string {
+  if (!text) return "";
+  if (maxLen <= 0) return text.length > 0 ? indicator : "";
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + indicator;
+}
+
+/**
  * Truncation strategy for LLM context.
  * - "head": Keep the beginning (default)
  * - "tail": Keep the end
@@ -1904,52 +1923,493 @@ export function warn(msg: string): void {
   console.error(chalk.yellow(`[${getCliName()}] WARNING:`), msg);
 }
 
-export type JsonErrorPayload = {
-  success: false;
-  error: string;
+export type JsonEnvelopeMetadata = {
+  executionMs: number;
+  version: string;
+};
+
+export type JsonErrorDetails = {
+  message: string;
   code: string;
+  exitCode: number;
+  recovery: string[];
+  cause?: string;
+  docs?: string;
   hint?: string;
   retryable?: boolean;
   details?: unknown;
 };
 
+export type JsonSuccessPayload<T = unknown> = {
+  success: true;
+  command: string;
+  timestamp: string;
+  data: T;
+  warnings?: string[];
+  metadata: JsonEnvelopeMetadata;
+  /** Soft success (command ran but had no effect). Omitted when true. */
+  effect?: false;
+  /** Required when effect is false. */
+  reason?: string;
+};
+
+export type JsonErrorPayload = {
+  success: false;
+  command: string;
+  timestamp: string;
+  error: JsonErrorDetails;
+  metadata: JsonEnvelopeMetadata;
+};
+
 export function isJsonOutput(options?: { json?: boolean; format?: string }): boolean {
-  return Boolean(options?.json || options?.format === "json");
+  const format = typeof options?.format === "string" ? options.format.trim() : "";
+  if (format) return format.toLowerCase() === "json";
+  return Boolean(options?.json);
 }
 
 export function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
-export function printJsonError(
-  err: unknown,
-  options: { code?: string; hint?: string; retryable?: boolean; details?: unknown } = {}
-): void {
-  const message =
-    err instanceof Error
-      ? err.message
-      : typeof err === "string"
-        ? err
-        : (() => {
-            try {
-              return JSON.stringify(err);
-            } catch {
-              return String(err);
-            }
-          })();
+// ============================================================================
+// INPUT VALIDATION HELPERS (CLI/Command Layer)
+// ============================================================================
 
+export type InputValidationOk<T> = { ok: true; value: T };
+export type InputValidationErr = { ok: false; message: string; details?: Record<string, unknown> };
+export type InputValidationResult<T> = InputValidationOk<T> | InputValidationErr;
+
+function formatAllowedOptions(options: readonly string[]): string {
+  return options.join(", ");
+}
+
+export function validateOneOf<T extends string>(
+  value: unknown,
+  name: string,
+  allowed: readonly T[],
+  options: { allowUndefined: true; caseInsensitive?: boolean }
+): InputValidationResult<T | undefined>;
+export function validateOneOf<T extends string>(
+  value: unknown,
+  name: string,
+  allowed: readonly T[],
+  options?: { allowUndefined?: false; caseInsensitive?: boolean }
+): InputValidationResult<T>;
+export function validateOneOf<T extends string>(
+  value: unknown,
+  name: string,
+  allowed: readonly T[],
+  options: { allowUndefined?: boolean; caseInsensitive?: boolean } = {}
+): InputValidationResult<T | undefined> {
+  if (value === undefined) {
+    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+  }
+
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      message: `${name} must be one of: ${formatAllowedOptions(allowed)}.`,
+      details: { field: name, received: value, allowed },
+    };
+  }
+
+  const raw = value.trim();
+  if (!raw) {
+    return {
+      ok: false,
+      message: `${name} must be one of: ${formatAllowedOptions(allowed)}.`,
+      details: { field: name, received: value, allowed },
+    };
+  }
+
+  if (options.caseInsensitive) {
+    const lower = raw.toLowerCase();
+    const idx = allowed.findIndex((a) => a.toLowerCase() === lower);
+    if (idx >= 0) return { ok: true, value: allowed[idx] };
+  } else if (allowed.includes(raw as T)) {
+    return { ok: true, value: raw as T };
+  }
+
+  return {
+    ok: false,
+    message: `${name} must be one of: ${formatAllowedOptions(allowed)}.`,
+    details: { field: name, received: value, allowed },
+  };
+}
+
+export function validateNonEmptyString(
+  value: unknown,
+  name: string,
+  options: { allowUndefined: true; trim?: boolean }
+): InputValidationResult<string | undefined>;
+export function validateNonEmptyString(
+  value: unknown,
+  name: string,
+  options?: { allowUndefined?: false; trim?: boolean }
+): InputValidationResult<string>;
+export function validateNonEmptyString(
+  value: unknown,
+  name: string,
+  options: { allowUndefined?: boolean; trim?: boolean } = {}
+): InputValidationResult<string | undefined> {
+  if (value === undefined) {
+    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+  }
+
+  if (typeof value !== "string") {
+    return { ok: false, message: `${name} must be a string.`, details: { field: name, received: value } };
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: false, message: `${name} must be a non-empty string.`, details: { field: name, received: value } };
+  }
+
+  return { ok: true, value: options.trim === false ? value : trimmed };
+}
+
+export function validatePositiveInt(
+  value: unknown,
+  name: string,
+  options: { min?: number; max?: number; allowUndefined: true }
+): InputValidationResult<number | undefined>;
+export function validatePositiveInt(
+  value: unknown,
+  name: string,
+  options?: { min?: number; max?: number; allowUndefined?: false }
+): InputValidationResult<number>;
+export function validatePositiveInt(
+  value: unknown,
+  name: string,
+  options: { min?: number; max?: number; allowUndefined?: boolean } = {}
+): InputValidationResult<number | undefined> {
+  if (value === undefined) {
+    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+  }
+
+  const asNumber =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() && /^-?\d+$/.test(value.trim())
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(asNumber) || !Number.isInteger(asNumber)) {
+    return {
+      ok: false,
+      message: `${name} must be an integer.`,
+      details: { field: name, received: value },
+    };
+  }
+
+  const min = typeof options.min === "number" ? options.min : 1;
+  if (asNumber < min) {
+    return {
+      ok: false,
+      message: `${name} must be >= ${min}.`,
+      details: { field: name, received: value, min },
+    };
+  }
+
+  if (typeof options.max === "number" && asNumber > options.max) {
+    return {
+      ok: false,
+      message: `${name} must be <= ${options.max}.`,
+      details: { field: name, received: value, max: options.max },
+    };
+  }
+
+  return { ok: true, value: asNumber };
+}
+
+export type PrintJsonErrorOptions = {
+  code?: string;
+  hint?: string;
+  retryable?: boolean;
+  details?: unknown;
+  cause?: string;
+  recovery?: string[];
+  docs?: string;
+  exitCode?: number;
+  command?: string;
+  startedAtMs?: number;
+  timestamp?: string;
+};
+
+const CM_ERROR_CODE_CATEGORIES: Partial<Record<string, ErrorCategory>> = {
+  // Input validation errors (4xx-like)
+  [ErrorCode.INVALID_INPUT]: "user_input",
+  [ErrorCode.MISSING_REQUIRED]: "user_input",
+  [ErrorCode.MISSING_API_KEY]: "llm",
+  [ErrorCode.BULLET_NOT_FOUND]: "user_input",
+  [ErrorCode.SESSION_NOT_FOUND]: "user_input",
+
+  // Config / playbook errors
+  [ErrorCode.PLAYBOOK_NOT_FOUND]: "configuration",
+  [ErrorCode.PLAYBOOK_CORRUPT]: "configuration",
+  [ErrorCode.CONFIG_INVALID]: "configuration",
+
+  // External service errors
+  [ErrorCode.NETWORK_ERROR]: "network",
+  [ErrorCode.CASS_NOT_FOUND]: "cass",
+  [ErrorCode.CASS_INDEX_STALE]: "cass",
+  [ErrorCode.CASS_SEARCH_FAILED]: "cass",
+  [ErrorCode.SEMANTIC_SEARCH_UNAVAILABLE]: "configuration",
+  [ErrorCode.LLM_API_ERROR]: "llm",
+  [ErrorCode.LLM_RATE_LIMITED]: "llm",
+  [ErrorCode.LLM_BUDGET_EXCEEDED]: "llm",
+
+  // File system errors
+  [ErrorCode.FILE_NOT_FOUND]: "filesystem",
+  [ErrorCode.FILE_PERMISSION_DENIED]: "filesystem",
+  [ErrorCode.FILE_WRITE_FAILED]: "filesystem",
+  [ErrorCode.LOCK_ACQUISITION_FAILED]: "filesystem",
+  [ErrorCode.ALREADY_EXISTS]: "user_input",
+
+  // Operational errors
+  [ErrorCode.SANITIZATION_FAILED]: "configuration",
+  [ErrorCode.VALIDATION_FAILED]: "user_input",
+  [ErrorCode.REFLECTION_FAILED]: "internal",
+  [ErrorCode.AUDIT_FAILED]: "internal",
+
+  // Generic fallbacks
+  [ErrorCode.INTERNAL_ERROR]: "internal",
+};
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function inferErrorCause(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const causeValue = (err as any).cause;
+  if (!causeValue) return undefined;
+  if (causeValue instanceof Error) return causeValue.message;
+  if (typeof causeValue === "string") return causeValue;
+  try {
+    return JSON.stringify(causeValue);
+  } catch {
+    return String(causeValue);
+  }
+}
+
+function defaultDocsForCode(code: string): string | undefined {
+  switch (code) {
+    case ErrorCode.NETWORK_ERROR:
+    case ErrorCode.CASS_NOT_FOUND:
+    case ErrorCode.CASS_INDEX_STALE:
+    case ErrorCode.CASS_SEARCH_FAILED:
+    case ErrorCode.SEMANTIC_SEARCH_UNAVAILABLE:
+    case ErrorCode.MISSING_API_KEY:
+    case ErrorCode.LLM_API_ERROR:
+    case ErrorCode.LLM_RATE_LIMITED:
+    case ErrorCode.LLM_BUDGET_EXCEEDED:
+    case ErrorCode.CONFIG_INVALID:
+    case ErrorCode.PLAYBOOK_NOT_FOUND:
+    case ErrorCode.PLAYBOOK_CORRUPT:
+      return "README.md#-troubleshooting";
+    default:
+      return undefined;
+  }
+}
+
+function defaultRecoveryForCategory(category: ErrorCategory, cli: string): string[] {
+  switch (category) {
+    case "user_input":
+      return [
+        `Run '${cli} <command> --help' to see expected arguments and flags.`,
+        "Fix the input and re-run the command.",
+      ];
+    case "configuration":
+      return [
+        `Run '${cli} doctor' to diagnose configuration issues.`,
+        `Re-run '${cli} init' if this is a fresh install.`,
+        "Fix the configuration and re-run the command.",
+      ];
+    case "filesystem":
+      return [
+        "Verify the referenced file paths exist and are readable/writable.",
+        "Check permissions for the target directory.",
+      ];
+    case "network":
+      return ["Check your network connection and retry.", "If the issue persists, try again later."];
+    case "cass":
+      return [
+        "Ensure `cass` is installed and available on your PATH.",
+        "Run `cass health` and `cass index` to verify cass is working.",
+      ];
+    case "llm":
+      return [
+        "Verify your LLM provider API key is set (e.g. OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).",
+        "Retry the command, or disable LLM-dependent features if supported.",
+      ];
+    case "internal":
+      return [
+        `Re-run with '--verbose' to capture diagnostics.`,
+        "If this persists, file a bug report with the command and the verbose output.",
+      ];
+    default:
+      return [
+        `Re-run with '--verbose' to capture diagnostics.`,
+        "If this persists, file a bug report with the command and the verbose output.",
+      ];
+  }
+}
+
+function defaultRecoveryForCode(code: string, cli: string): string[] | undefined {
+  switch (code) {
+    case ErrorCode.MISSING_API_KEY:
+      return [
+        "Set an API key for your chosen provider (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).",
+        "If supported, store the key in config and re-run the command.",
+        "Or disable LLM-dependent features (for example, set CASS_MEMORY_LLM=none where supported).",
+      ];
+    case ErrorCode.BULLET_NOT_FOUND:
+      return [
+        `Run '${cli} playbook list' to see available rule IDs.`,
+        `Use '${cli} similar \"<query>\"' to search for related rules.`,
+        "Double-check the bullet id you provided (example: b-abc123).",
+      ];
+    case ErrorCode.SESSION_NOT_FOUND:
+      return [
+        "Verify the session path exists on disk.",
+        "If using cass, run `cass search <query>` to locate the session path.",
+      ];
+    case ErrorCode.PLAYBOOK_NOT_FOUND:
+      return [`Run '${cli} init' to create the default playbook.`, "Or set playbookPath in config."];
+    case ErrorCode.PLAYBOOK_CORRUPT:
+      return [
+        `Run '${cli} doctor' to identify corruption and backups.`,
+        "Restore a known-good playbook backup if available.",
+      ];
+    case ErrorCode.CONFIG_INVALID:
+      return [
+        `Run '${cli} doctor' to see exactly what is invalid.`,
+        "Fix the config file and re-run the command.",
+      ];
+    case ErrorCode.CASS_NOT_FOUND:
+      return [
+        "Install `cass` and ensure it is on your PATH.",
+        "Run `cass health` to confirm it works.",
+        "If cass is installed elsewhere, set the path in config (cassPath) or your PATH.",
+      ];
+    case ErrorCode.CASS_INDEX_STALE:
+      return ["Run `cass index` to rebuild the session index.", "Then re-run the command."];
+    case ErrorCode.SEMANTIC_SEARCH_UNAVAILABLE:
+      return [
+        "Run a semantic-search command while online once to download/cache the embedding model.",
+        "Verify semanticSearchEnabled is true in config (and embeddingModel is not 'none').",
+        "Re-run the command, or use keyword-only mode if available.",
+      ];
+    case ErrorCode.LLM_RATE_LIMITED:
+      return ["Wait briefly and retry.", "Reduce parallel requests if running multiple agents."];
+    case ErrorCode.FILE_PERMISSION_DENIED:
+      return ["Check file permissions for the path being accessed.", "Re-run with appropriate permissions."];
+    case ErrorCode.LOCK_ACQUISITION_FAILED:
+      return [
+        "Another process may be editing the same file. Wait and retry.",
+        "If the lock is stale, inspect the lock file and resolve manually.",
+      ];
+    default:
+      return undefined;
+  }
+}
+
+export function getExitCodeForError(err: unknown, code?: string): number {
+  const category = (code ? CM_ERROR_CODE_CATEGORIES[code] : undefined) ?? categorizeError(err);
+  return ERROR_CATEGORY_EXIT_CODES[category] ?? 1;
+}
+
+export function buildJsonErrorPayload(err: unknown, options: PrintJsonErrorOptions = {}): JsonErrorPayload {
+  const cli = getCliName();
+  const message = getErrorMessage(err);
   const code = options.code ?? ErrorCode.UNKNOWN_ERROR;
-
-  const payload: JsonErrorPayload = {
-    success: false,
-    code,
-    error: message,
-    ...(options.hint ? { hint: options.hint } : {}),
-    ...(typeof options.retryable === "boolean" ? { retryable: options.retryable } : {}),
-    ...(options.details !== undefined ? { details: options.details } : {}),
+  const category = CM_ERROR_CODE_CATEGORIES[code] ?? categorizeError(err);
+  const exitCode = options.exitCode ?? ERROR_CATEGORY_EXIT_CODES[category] ?? 1;
+  const recovery =
+    (Array.isArray(options.recovery) && options.recovery.length > 0 ? options.recovery : undefined) ??
+    defaultRecoveryForCode(code, cli) ??
+    defaultRecoveryForCategory(category, cli);
+  const docs = options.docs ?? defaultDocsForCode(code);
+  const cause = options.cause ?? inferErrorCause(err);
+  const timestamp = options.timestamp ?? new Date().toISOString();
+  const command = options.command ?? getCliName();
+  const metadata: JsonEnvelopeMetadata = {
+    executionMs:
+      typeof options.startedAtMs === "number" && Number.isFinite(options.startedAtMs)
+        ? Math.max(0, Date.now() - options.startedAtMs)
+        : 0,
+    version: getVersion(),
   };
 
-  printJson(payload);
+  return {
+    success: false,
+    command,
+    timestamp,
+    error: {
+      message,
+      code,
+      exitCode,
+      recovery,
+      ...(cause ? { cause } : {}),
+      ...(docs ? { docs } : {}),
+      ...(options.hint ? { hint: options.hint } : {}),
+      ...(typeof options.retryable === "boolean" ? { retryable: options.retryable } : {}),
+      ...(options.details !== undefined ? { details: options.details } : {}),
+    },
+    metadata,
+  };
+}
+
+export function printJsonError(
+  err: unknown,
+  options: PrintJsonErrorOptions = {}
+): void {
+  printJson(buildJsonErrorPayload(err, options));
+}
+
+export function printHumanErrorPayload(payload: JsonErrorPayload): void {
+  const cliName = getCliName();
+  console.error(`${chalk.red(`${cliName}: error:`)} ${payload.error.message}`);
+
+  if (payload.error.cause) {
+    console.error(chalk.gray(`Cause: ${payload.error.cause}`));
+  }
+
+  if (Array.isArray(payload.error.recovery) && payload.error.recovery.length > 0) {
+    console.error(chalk.bold("Recovery:"));
+    for (const step of payload.error.recovery) {
+      console.error(`  - ${step}`);
+    }
+  }
+
+  if (payload.error.docs) {
+    console.error(chalk.gray(`Docs: ${payload.error.docs}`));
+  }
+
+  if (payload.error.hint) {
+    console.error(chalk.gray(`Hint: ${payload.error.hint}`));
+  }
+}
+
+export function reportError(
+  err: unknown,
+  options: PrintJsonErrorOptions & { json?: boolean; format?: string } = {}
+): number {
+  const payload = buildJsonErrorPayload(err, options);
+  if (isJsonOutput(options)) {
+    printJson(payload);
+  } else {
+    printHumanErrorPayload(payload);
+  }
+  process.exitCode = payload.error.exitCode;
+  return payload.error.exitCode;
 }
 
 /**
@@ -1960,6 +2420,9 @@ export interface JsonResultOptions {
   effect?: boolean;
   /** Reason explaining why effect is false (required when effect is false) */
   reason?: string;
+  warnings?: string[];
+  startedAtMs?: number;
+  timestamp?: string;
 }
 
 /**
@@ -1970,34 +2433,40 @@ export interface JsonResultOptions {
  *
  * @example
  * // Normal success
- * printJsonResult({ bulletId, type, newState });
- * // → { "success": true, "bulletId": "...", "type": "...", "newState": "..." }
+ * printJsonResult("mark", { bulletId, type, newState });
+ * // → { "success": true, "command": "mark", "data": { ... }, "metadata": { ... } }
  *
  * @example
  * // Soft success (ran but no effect)
- * printJsonResult({ rulesProvided: ["b-123"] }, { effect: false, reason: "No signal strong enough" });
- * // → { "success": true, "effect": false, "reason": "...", "rulesProvided": [...] }
+ * printJsonResult("outcome", { rulesProvided: ["b-123"] }, { effect: false, reason: "No signal strong enough" });
+ * // → { "success": true, "command": "outcome", "effect": false, "reason": "...", "data": { ... } }
  */
-export function printJsonResult(
-  data: unknown,
+export function printJsonResult<T>(
+  command: string,
+  data: T,
   options: JsonResultOptions = {}
 ): void {
-  const { effect = true, reason } = options;
-  const base = {
-    success: true as const,
+  const { effect = true, reason, warnings } = options;
+  const timestamp = options.timestamp ?? new Date().toISOString();
+  const metadata: JsonEnvelopeMetadata = {
+    executionMs:
+      typeof options.startedAtMs === "number" && Number.isFinite(options.startedAtMs)
+        ? Math.max(0, Date.now() - options.startedAtMs)
+        : 0,
+    version: getVersion(),
+  };
+
+  const payload: JsonSuccessPayload<T> = {
+    success: true,
+    command,
+    timestamp,
+    data,
+    metadata,
+    ...(Array.isArray(warnings) && warnings.length > 0 ? { warnings } : {}),
     ...(effect === false ? { effect: false as const, reason } : {}),
   };
 
-  // Prefer a flat top-level payload when data is object-like; otherwise wrap.
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    // Protect reserved top-level keys from accidental collisions.
-    const { success: _ignoredSuccess, effect: _ignoredEffect, reason: _ignoredReason, ...rest } =
-      data as Record<string, unknown> & { success?: unknown; effect?: unknown; reason?: unknown };
-    printJson({ ...base, ...rest });
-    return;
-  }
-
-  printJson({ ...base, data });
+  printJson(payload);
 }
 
 // --- String Normalization ---

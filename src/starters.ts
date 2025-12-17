@@ -342,10 +342,9 @@ async function findStarterDefinition(name: string): Promise<StarterDefinition | 
   const customFiles = await discoverCustomStarterFiles();
   for (const file of customFiles) {
     const base = path.basename(file, path.extname(file)).toLowerCase();
-    if (base === normalized) {
-      const def = await loadCustomStarter(file);
-      if (def) return def;
-    }
+    const def = await loadCustomStarter(file);
+    if (!def) continue;
+    if (base === normalized || def.name.toLowerCase() === normalized) return def;
   }
 
   const builtin = BUILTIN_STARTERS.find((s) => s.name.toLowerCase() === normalized);
@@ -389,4 +388,3 @@ export function applyStarter(
 
   return { added, skipped };
 }
-

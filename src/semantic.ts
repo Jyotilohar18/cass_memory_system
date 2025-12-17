@@ -164,7 +164,7 @@ export async function embedText(
 export async function batchEmbed(
   texts: string[],
   batchSize = 32,
-  options: { model?: string } = {}
+  options: { model?: string; onProgress?: (event: { processed: number; total: number }) => void } = {}
 ): Promise<number[][]> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   if (model === "none") return texts.map(() => []);
@@ -210,6 +210,14 @@ export async function batchEmbed(
       const endIdx = startIdx + dim;
       const vec = Array.from(data.subarray ? data.subarray(startIdx, endIdx) : data.slice(startIdx, endIdx)) as number[];
       output[batch[i].index] = vec;
+    }
+
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress({ processed: Math.min(start + batchCount, nonEmpty.length), total: nonEmpty.length });
+      } catch {
+        // Progress is best-effort; never break embeddings
+      }
     }
   }
 
@@ -297,13 +305,42 @@ export interface EmbeddingStats {
 
 export async function loadOrComputeEmbeddingsForBullets(
   bullets: PlaybookBullet[],
-  options: { model?: string; cachePath?: string } = {}
+  options: {
+    model?: string;
+    cachePath?: string;
+    onProgress?: (event: {
+      phase: "start" | "progress" | "done";
+      current: number;
+      total: number;
+      reused: number;
+      computed: number;
+      skipped: number;
+      message: string;
+    }) => void;
+  } = {}
 ): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
 
   // Use lock to prevent concurrent cache corruption
   return withLock(cachePath, async () => {
+    const emitProgress = (event: {
+      phase: "start" | "progress" | "done";
+      current: number;
+      total: number;
+      reused: number;
+      computed: number;
+      skipped: number;
+      message: string;
+    }) => {
+      if (typeof options.onProgress !== "function") return;
+      try {
+        options.onProgress(event);
+      } catch {
+        // Best-effort only
+      }
+    };
+
     const cache = await loadEmbeddingCache({ cachePath, model });
 
     let reused = 0;
@@ -334,12 +371,36 @@ export async function loadOrComputeEmbeddingsForBullets(
       toCompute.push({ bullet, contentHash });
     }
 
+    const totalToCompute = toCompute.length;
+    emitProgress({
+      phase: "start",
+      current: 0,
+      total: totalToCompute,
+      reused,
+      computed,
+      skipped,
+      message: totalToCompute > 0 ? "Computing semantic embeddings..." : "Semantic embeddings up to date",
+    });
+
     if (model !== "none" && toCompute.length > 0) {
       try {
         const embeddings = await batchEmbed(
           toCompute.map((x) => x.bullet.content),
           32,
-          { model }
+          {
+            model,
+            onProgress: (event) => {
+              emitProgress({
+                phase: "progress",
+                current: event.processed,
+                total: event.total,
+                reused,
+                computed,
+                skipped,
+                message: "Computing semantic embeddings...",
+              });
+            },
+          }
         );
 
         for (let i = 0; i < toCompute.length; i++) {
@@ -362,11 +423,22 @@ export async function loadOrComputeEmbeddingsForBullets(
       } catch (err: any) {
         warn(`[semantic] batchEmbed failed; falling back to per-text embedding. ${err?.message || ""}`.trim());
 
+        let processed = 0;
         for (const { bullet, contentHash } of toCompute) {
           try {
             const embedding = await embedText(bullet.content, { model });
             if (embedding.length === 0) {
               skipped++;
+              processed++;
+              emitProgress({
+                phase: "progress",
+                current: processed,
+                total: totalToCompute,
+                reused,
+                computed,
+                skipped,
+                message: "Computing semantic embeddings...",
+              });
               continue;
             }
 
@@ -377,9 +449,29 @@ export async function loadOrComputeEmbeddingsForBullets(
               computedAt: new Date().toISOString(),
             };
             computed++;
+            processed++;
+            emitProgress({
+              phase: "progress",
+              current: processed,
+              total: totalToCompute,
+              reused,
+              computed,
+              skipped,
+              message: "Computing semantic embeddings...",
+            });
           } catch (innerErr: any) {
             warn(`[semantic] embedText failed for bullet ${bullet.id}: ${innerErr?.message || innerErr}`);
             skipped++;
+            processed++;
+            emitProgress({
+              phase: "progress",
+              current: processed,
+              total: totalToCompute,
+              reused,
+              computed,
+              skipped,
+              message: "Computing semantic embeddings...",
+            });
           }
         }
       }
@@ -389,6 +481,16 @@ export async function loadOrComputeEmbeddingsForBullets(
     if (computed > 0 || !await fs.access(cachePath).then(() => true).catch(() => false)) {
       await saveEmbeddingCache(cache, { cachePath });
     }
+
+    emitProgress({
+      phase: "done",
+      current: totalToCompute,
+      total: totalToCompute,
+      reused,
+      computed,
+      skipped,
+      message: computed > 0 ? "Semantic embeddings computed" : "Semantic embeddings ready",
+    });
 
     return { cache, stats: { reused, computed, skipped } };
   });

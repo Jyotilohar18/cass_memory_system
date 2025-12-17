@@ -1,6 +1,6 @@
 import { Config, Playbook, AuditViolation } from "./types.js";
-import { cassExport } from "./cass.js";
-import { PROMPTS, llmWithFallback, fillPrompt } from "./llm.js";
+import { cassExport, type CassRunner } from "./cass.js";
+import { PROMPTS, llmWithFallback, fillPrompt, type LLMIO } from "./llm.js";
 import { z } from "zod";
 import { warn, truncateForContext } from "./utils.js";
 import { getActiveBullets } from "./playbook.js";
@@ -8,7 +8,9 @@ import { getActiveBullets } from "./playbook.js";
 export async function scanSessionsForViolations(
   sessions: string[],
   playbook: Playbook,
-  config: Config
+  config: Config,
+  io?: LLMIO,
+  cassRunner?: CassRunner
 ): Promise<AuditViolation[]> {
   const violations: AuditViolation[] = [];
   // Use getActiveBullets for consistent filtering (includes maturity !== "deprecated")
@@ -36,7 +38,9 @@ export async function scanSessionsForViolations(
     await Promise.all(chunk.map(async (sessionPath) => {
       try {
         // Pass config to ensure sanitization overrides are respected
-        const content = await cassExport(sessionPath, "text", config.cassPath, config);
+        const content = cassRunner
+          ? await cassExport(sessionPath, "text", config.cassPath, config, cassRunner)
+          : await cassExport(sessionPath, "text", config.cassPath, config);
         if (!content) return;
 
         // Truncate rules list if necessary (rough estimate: 100 chars per rule)
@@ -58,7 +62,8 @@ export async function scanSessionsForViolations(
         const result = await llmWithFallback(
           AuditOutputSchema,
           prompt,
-          config
+          config,
+          io
         );
 
         for (const res of result.results) {
