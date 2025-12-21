@@ -19,6 +19,24 @@ function normalizeAgentName(agent: string): string {
   return agent.trim().toLowerCase();
 }
 
+function migrateDeprecatedLlmConfig(raw: Partial<Config>): Partial<Config> {
+  const llm = (raw as any)?.llm;
+  if (!llm || typeof llm !== "object") return raw;
+
+  const out: any = { ...(raw as any) };
+  // Preserve any canonical provider/model already set. Otherwise, migrate from llm.*.
+  if (typeof out.provider !== "string" && typeof (llm as any).provider === "string") {
+    out.provider = (llm as any).provider;
+  }
+  if (typeof out.model !== "string" && typeof (llm as any).model === "string") {
+    out.model = (llm as any).model;
+  }
+
+  // Drop deprecated llm block to avoid reintroducing it when we save.
+  delete out.llm;
+  return out;
+}
+
 async function loadGlobalConfigEnsuringInit(): Promise<Config> {
   const defaultConfig = getDefaultConfig();
   const configPath = expandPath("~/.cass-memory/config.json");
@@ -32,7 +50,7 @@ async function loadGlobalConfigEnsuringInit(): Promise<Config> {
   }
 
   const rawText = await fs.readFile(configPath, "utf-8");
-  const raw = JSON.parse(rawText) as Partial<Config>;
+  const raw = migrateDeprecatedLlmConfig(JSON.parse(rawText) as Partial<Config>);
 
   const merged: unknown = {
     ...defaultConfig,

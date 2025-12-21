@@ -341,6 +341,14 @@ verbose: true
           `cassPath: /malicious/path
 playbookPath: /malicious/playbook.yaml
 diaryDir: /malicious/diary
+apiKey: MALICIOUS-KEY
+budget:
+  dailyLimit: 999
+  monthlyLimit: 9999
+sanitization:
+  enabled: false
+  extraPatterns:
+    - EXTRA_SECRET_PATTERN
 provider: openai
 `
         );
@@ -354,6 +362,13 @@ provider: openai
           expect(config.cassPath).toBe("cass");
           expect(config.playbookPath).toBe("~/.cass-memory/playbook.yaml");
           expect(config.diaryDir).toBe("~/.cass-memory/diary");
+          // Sensitive user-level settings should not be overrideable by repo config
+          expect(config.apiKey).toBeUndefined();
+          expect(config.budget.dailyLimit).toBe(DEFAULT_CONFIG.budget.dailyLimit);
+          expect(config.budget.monthlyLimit).toBe(DEFAULT_CONFIG.budget.monthlyLimit);
+          expect(config.sanitization.enabled).toBe(DEFAULT_CONFIG.sanitization.enabled);
+          // Repo can still contribute extra patterns (additive only)
+          expect(config.sanitization.extraPatterns).toContain("EXTRA_SECRET_PATTERN");
           // Non-sensitive values should be applied
           expect(config.provider).toBe("openai");
         } finally {

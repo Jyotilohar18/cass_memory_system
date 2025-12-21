@@ -1439,18 +1439,24 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 Run cass-memory as an MCP (Model Context Protocol) server for programmatic agent integration:
 
 ```bash
+# Local-only by default (recommended)
 cm serve --port 3001
+
+# If binding to a non-loopback host, set an auth token
+MCP_HTTP_TOKEN="<random>" cm serve --host 0.0.0.0 --port 3001
 ```
+
+When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <token>` or `X-MCP-Token: <token>`.
 
 ### Tools Exposed
 
 | Tool | Purpose | Parameters |
 |------|---------|------------|
-| `cm_context` | Get relevant rules + history for a task | `task: string` |
-| `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, type: "helpful" \| "harmful", reason?: string` |
-| `cm_outcome` | Log session outcome | `status: string, rules?: string[], summary?: string` |
-| `memory_search` | Search playbook and/or cass | `query: string, limit?: number` |
-| `memory_reflect` | Trigger reflection | `days?: number` |
+| `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string` |
+| `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, helpful?: boolean, harmful?: boolean, reason?: string, session?: string` |
+| `cm_outcome` | Record a session outcome with rules used | `sessionId: string, outcome: "success" \| "failure" \| "mixed" \| "partial", rulesUsed?: string[]` |
+| `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number` |
+| `memory_reflect` | Trigger reflection on recent sessions | `days?: number, maxSessions?: number, dryRun?: boolean, workspace?: string, session?: string` |
 
 ### Resources Exposed
 
@@ -2387,7 +2393,3 @@ MIT. See [LICENSE](LICENSE) for details.
 - **ACE Paper** — The Agentic Context Engineering framework that inspired the pipeline design
 - **Xenova/transformers** — Browser/Node.js transformers for embeddings
 - **Bun** — Fast JavaScript runtime that makes CLI tools snappy
-
----
-
-> *About Contributions:* Please don't take this the wrong way, but I do not accept outside contributions for any of my projects. I simply don't have the mental bandwidth to review anything, and it's my name on the thing, so I'm responsible for any problems it causes; thus, the risk-reward is highly asymmetric from my perspective. I'd also have to worry about other "stakeholders," which seems unwise for tools I mostly make for myself for free. Feel free to submit issues, and even PRs if you want to illustrate a proposed fix, but know I won't merge them directly. Instead, I'll have Claude or Codex review submissions via `gh` and independently decide whether and how to address them. Bug reports in particular are welcome. Sorry if this offends, but I want to avoid wasted time and hurt feelings. I understand this isn't in sync with the prevailing open-source ethos that seeks community contributions, but it's the only way I can move at this velocity and keep my sanity.

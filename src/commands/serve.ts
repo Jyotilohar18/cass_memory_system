@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { generateContextResult } from "./context.js";
 import { recordFeedback } from "./mark.js";
@@ -59,9 +60,10 @@ const TOOL_DEFS = [
       properties: {
         task: { type: "string", description: "Task description" },
         workspace: { type: "string" },
-        top: { type: "number" },
-        history: { type: "number" },
-        days: { type: "number" }
+        limit: { type: "integer", minimum: 1, description: "Max rules to return" },
+        top: { type: "integer", minimum: 1, description: "DEPRECATED: use limit" },
+        history: { type: "integer", minimum: 1 },
+        days: { type: "integer", minimum: 1 }
       },
       required: ["task"]
     }
@@ -88,11 +90,11 @@ const TOOL_DEFS = [
       type: "object",
       properties: {
         sessionId: { type: "string" },
-        outcome: { type: "string", description: "success | failure | mixed" },
+        outcome: { type: "string", description: "success | failure | mixed | partial" },
         rulesUsed: { type: "array", items: { type: "string" } },
         notes: { type: "string" },
         task: { type: "string" },
-        durationSec: { type: "number" }
+        durationSec: { type: "integer", minimum: 0 }
       },
       required: ["sessionId", "outcome"]
     }
@@ -105,8 +107,8 @@ const TOOL_DEFS = [
       properties: {
         query: { type: "string", description: "Search query text" },
         scope: { type: "string", enum: ["playbook", "cass", "both"], default: "both" },
-        limit: { type: "number", default: 10 },
-        days: { type: "number", description: "Limit cass search to lookback days" },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 10 },
+        days: { type: "integer", minimum: 1, description: "Limit cass search to lookback days" },
         agent: { type: "string", description: "Filter cass search by agent" },
         workspace: { type: "string", description: "Filter cass search by workspace" }
       },
@@ -119,8 +121,8 @@ const TOOL_DEFS = [
     inputSchema: {
       type: "object",
       properties: {
-        days: { type: "number", description: "Look back this many days for sessions", default: 7 },
-        maxSessions: { type: "number", description: "Maximum sessions to process", default: 20 },
+        days: { type: "integer", minimum: 1, description: "Look back this many days for sessions", default: 7 },
+        maxSessions: { type: "integer", minimum: 1, maximum: 200, description: "Maximum sessions to process", default: 20 },
         dryRun: { type: "boolean", description: "If true, return proposed changes without applying", default: false },
         workspace: { type: "string", description: "Workspace path to limit session search" },
         session: { type: "string", description: "Specific session path to reflect on" }
@@ -157,6 +159,40 @@ const RESOURCE_DEFS = [
 ];
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB guard to avoid runaway payloads
+const MCP_HTTP_TOKEN_ENV = "MCP_HTTP_TOKEN";
+const MCP_HTTP_UNSAFE_NO_TOKEN_ENV = "MCP_HTTP_UNSAFE_NO_TOKEN";
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === "localhost" || normalized === "::1" || normalized === "127.0.0.1") return true;
+  if (normalized.startsWith("127.")) return true;
+  return false;
+}
+
+function getMcpHttpToken(): string | undefined {
+  const raw = (process.env[MCP_HTTP_TOKEN_ENV] ?? "").trim();
+  return raw ? raw : undefined;
+}
+
+function headerValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  return undefined;
+}
+
+function extractBearerToken(authorization: string | undefined): string | undefined {
+  if (!authorization) return undefined;
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  return token ? token : undefined;
+}
+
+function tokensMatch(provided: string, expected: string): boolean {
+  const providedHash = createHash("sha256").update(provided, "utf8").digest();
+  const expectedHash = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(providedHash, expectedHash);
+}
 
 function countBy<T>(items: T[], keyFn: (item: T) => string): Record<string, number> {
   return items.reduce<Record<string, number>>((acc, item) => {
@@ -215,6 +251,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case "cm_context": {
       assertArgs(args, { task: "string" });
+      const limit = validatePositiveInt(args?.limit, "limit", { min: 1, allowUndefined: true });
+      if (!limit.ok) throw new Error(limit.message);
       const top = validatePositiveInt(args?.top, "top", { min: 1, allowUndefined: true });
       if (!top.ok) throw new Error(top.message);
       const history = validatePositiveInt(args?.history, "history", { min: 1, allowUndefined: true });
@@ -225,7 +263,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!workspace.ok) throw new Error(workspace.message);
 
       const context = await generateContextResult(args.task, {
-        top: top.value,
+        limit: limit.value ?? top.value,
         history: history.value,
         days: days.value,
         workspace: workspace.value,
@@ -237,8 +275,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       assertArgs(args, { bulletId: "string" });
       const helpful = Boolean(args?.helpful);
       const harmful = Boolean(args?.harmful);
-      if (!helpful && !harmful) {
-        throw new Error("cm_feedback requires helpful or harmful to be set");
+      if (helpful === harmful) {
+        throw new Error("cm_feedback requires exactly one of helpful or harmful to be set");
       }
       const reason = validateNonEmptyString(args?.reason, "reason", { allowUndefined: true, trim: false });
       if (!reason.ok) throw new Error(reason.message);
@@ -482,6 +520,15 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
   return buildError(body.id ?? null, `Unsupported method: ${body.method}`, -32601);
 }
 
+// Internal exports for unit tests (kept small to avoid expanding public API surface).
+export const __test = {
+  buildError,
+  routeRequest,
+  isLoopbackHost,
+  headerValue,
+  extractBearerToken,
+};
+
 export async function serveCommand(options: { port?: number; host?: string } = {}): Promise<void> {
   const startedAtMs = Date.now();
   const command = "serve";
@@ -539,8 +586,29 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     return;
   }
   const host = hostFromArgs.value ?? hostFromEnv.value ?? "127.0.0.1";
+  const token = getMcpHttpToken();
+  const allowInsecureNoToken = process.env[MCP_HTTP_UNSAFE_NO_TOKEN_ENV] === "1";
+  const loopback = isLoopbackHost(host);
 
-  if (host === "0.0.0.0" && process.env.NODE_ENV !== "development") {
+  if (!loopback && !token && !allowInsecureNoToken) {
+    reportError(
+      `Refusing to bind MCP HTTP server to '${host}' without auth. Set ${MCP_HTTP_TOKEN_ENV} or use --host 127.0.0.1.`,
+      {
+        code: ErrorCode.INVALID_INPUT,
+        details: { host, tokenEnv: MCP_HTTP_TOKEN_ENV, overrideEnv: MCP_HTTP_UNSAFE_NO_TOKEN_ENV },
+        hint: `Example: ${MCP_HTTP_TOKEN_ENV}='<random>' cm serve --host ${host} --port ${port}`,
+        command,
+        startedAtMs,
+      }
+    );
+    return;
+  }
+
+  if (!loopback && !token && allowInsecureNoToken) {
+    warn(
+      `Warning: ${MCP_HTTP_UNSAFE_NO_TOKEN_ENV}=1 disables auth while binding to '${host}'. This exposes your playbook/diary/history to the network.`
+    );
+  } else if (host === "0.0.0.0" && process.env.NODE_ENV !== "development") {
     warn("Warning: Binding to 0.0.0.0 exposes the server to the network. Ensure this is intended.");
   }
 
@@ -549,6 +617,20 @@ export async function serveCommand(options: { port?: number; host?: string } = {
       res.statusCode = 405;
       res.end();
       return;
+    }
+
+    if (token) {
+      const authHeader = headerValue(req.headers.authorization);
+      const bearer = extractBearerToken(authHeader);
+      const xToken = headerValue(req.headers["x-mcp-token"]);
+      const provided = bearer ?? (xToken ? xToken.trim() : undefined);
+
+      if (!provided || !tokensMatch(provided, token)) {
+        res.statusCode = 401;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(buildError(null, "Unauthorized", -32001)));
+        return;
+      }
     }
 
     const chunks: Buffer[] = [];
@@ -594,17 +676,21 @@ export async function serveCommand(options: { port?: number; host?: string } = {
 
   const baseUrl = `http://${host}:${port}`;
   log(`MCP HTTP server listening on ${baseUrl}`, true);
+  if (token) {
+    log(`Auth enabled via ${MCP_HTTP_TOKEN_ENV} (send: Authorization: Bearer <token> or X-MCP-Token)`, true);
+  }
   warn("Transport is HTTP-only; stdio/SSE are intentionally disabled.");
   log(`Tools: ${TOOL_DEFS.map((t) => t.name).join(", ")}`, true);
   log(`Resources: ${RESOURCE_DEFS.map((r) => r.uri).join(", ")}`, true);
   log("Example (list tools):", true);
+  const authHeaderExample = token ? ` -H "authorization: Bearer <token>"` : "";
   log(
-    `  curl -sS -X POST ${baseUrl} -H "content-type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`,
+    `  curl -sS -X POST ${baseUrl} -H "content-type: application/json"${authHeaderExample} -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`,
     true
   );
   log("Example (call cm_context):", true);
   log(
-    `  curl -sS -X POST ${baseUrl} -H "content-type: application/json" -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cm_context","arguments":{"task":"fix auth timeout","top":5,"history":3}}}'`,
+    `  curl -sS -X POST ${baseUrl} -H "content-type: application/json"${authHeaderExample} -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cm_context","arguments":{"task":"fix auth timeout","limit":5,"history":3}}}'`,
     true
   );
 }

@@ -165,7 +165,11 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   // Migrate deprecated llm.* shape to top-level
   const globalConfig = migrateLlmConfig(globalConfigRaw);
 
+  // Repo-level config is user-owned and may be committed to source control. We intentionally
+  // restrict which settings a repo can override to prevent leaking secrets or weakening
+  // sanitization/budget protections.
   let repoConfig: Partial<Config> = {};
+  let repoSanitizationExtraPatterns: string[] = [];
   const repoCassDir = await resolveRepoDir();
 
   if (repoCassDir) {
@@ -174,16 +178,60 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     // Migrate deprecated llm.* shape to top-level
     repoConfig = migrateLlmConfig(repoConfigRaw);
 
+    // Allow repos to *add* extra sanitization patterns, but never disable sanitization.
+    const maybeExtra = (repoConfig as any)?.sanitization?.extraPatterns;
+    if (Array.isArray(maybeExtra)) {
+      repoSanitizationExtraPatterns = maybeExtra
+        .filter((p: unknown): p is string => typeof p === "string")
+        .map((p) => p.trim())
+        .filter(Boolean);
+    } else if (maybeExtra !== undefined) {
+      warn(`Ignoring repo sanitization.extraPatterns: expected string[] (repo config cannot override sanitization settings)`);
+    }
+
     // Security: Prevent repo from overriding sensitive user-level settings
     delete repoConfig.cassPath;
     delete repoConfig.playbookPath;
     delete repoConfig.diaryDir;
     delete repoConfig.crossAgent;
     delete repoConfig.remoteCass;
+    delete repoConfig.apiKey;
+    delete (repoConfig as any).budget;
+    delete (repoConfig as any).sanitization;
   }
 
   // Migrate CLI overrides as well (unlikely but complete)
   const migratedOverrides = migrateLlmConfig(cliOverrides);
+
+  const globalExtra = (globalConfig as any)?.sanitization?.extraPatterns;
+  const cliExtra = (cliOverrides as any)?.sanitization?.extraPatterns;
+  const canOverrideExtraPatterns =
+    (globalExtra === undefined || Array.isArray(globalExtra)) &&
+    (cliExtra === undefined || Array.isArray(cliExtra));
+
+  // Only override `sanitization.extraPatterns` when upstream types are valid. This preserves
+  // strict config validation (mis-typed config should fail fast instead of being silently coerced).
+  const mergedSanitizationExtraPatterns: string[] | undefined = (() => {
+    if (!canOverrideExtraPatterns) return undefined;
+
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    const pushPattern = (p: unknown) => {
+      if (typeof p !== "string") return;
+      const trimmed = p.trim();
+      if (!trimmed) return;
+      if (seen.has(trimmed)) return;
+      seen.add(trimmed);
+      merged.push(trimmed);
+    };
+
+    for (const p of defaults.sanitization.extraPatterns) pushPattern(p);
+    if (Array.isArray(globalExtra)) for (const p of globalExtra) pushPattern(p);
+    for (const p of repoSanitizationExtraPatterns) pushPattern(p);
+    if (Array.isArray(cliExtra)) for (const p of cliExtra) pushPattern(p);
+
+    return merged;
+  })();
 
   const merged = {
     ...defaults,
@@ -193,8 +241,8 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     sanitization: {
       ...defaults.sanitization,
       ...(globalConfig.sanitization || {}),
-      ...(repoConfig.sanitization || {}),
       ...(cliOverrides.sanitization || {}),
+      ...(mergedSanitizationExtraPatterns ? { extraPatterns: mergedSanitizationExtraPatterns } : {}),
     },
     crossAgent: {
       ...defaults.crossAgent,
@@ -211,7 +259,6 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     budget: {
       ...defaults.budget,
       ...(globalConfig.budget || {}),
-      ...(repoConfig.budget || {}),
       ...(cliOverrides.budget || {}),
     },
   };
