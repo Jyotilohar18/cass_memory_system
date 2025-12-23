@@ -130,11 +130,12 @@ export async function checkBudget(config: Config): Promise<{ allowed: boolean; r
     const dailyCost = (total.currentDay?.day === today) ? (total.currentDay.cost || 0) : 0;
     const monthlyCost = (total.currentMonth?.month === month) ? (total.currentMonth.cost || 0) : 0;
 
-    if (dailyCost >= budget.dailyLimit) {
+    // A limit of 0 (or less) means "no limit" (consistent with usage formatting).
+    if (budget.dailyLimit > 0 && dailyCost >= budget.dailyLimit) {
       return { allowed: false, reason: `Daily budget exceeded ($${dailyCost.toFixed(2)} / $${budget.dailyLimit.toFixed(2)})` };
     }
 
-    if (monthlyCost >= budget.monthlyLimit) {
+    if (budget.monthlyLimit > 0 && monthlyCost >= budget.monthlyLimit) {
       return { allowed: false, reason: `Monthly budget exceeded ($${monthlyCost.toFixed(2)} / $${budget.monthlyLimit.toFixed(2)})` };
     }
   } catch (err) {

@@ -150,4 +150,26 @@ describe("Cost Tracking & Optimization", () => {
       expect(result.allowed).toBe(true);
     });
   });
+
+  it("checkBudget treats 0 limits as unlimited", async () => {
+    await withTempDir(async (dir) => {
+      const config = createTestConfig({
+        budget: { dailyLimit: 0, monthlyLimit: 0, warningThreshold: 80, currency: "USD" }
+      });
+
+      const costDir = path.join(dir, ".cass-memory", "cost");
+      await fs.mkdir(costDir, { recursive: true });
+
+      const today = new Date().toISOString().slice(0, 10);
+      await fs.writeFile(path.join(costDir, "total.json"), JSON.stringify({
+        allTime: 999.0,
+        lastUpdated: now(),
+        currentDay: { day: today, cost: 999.0 },
+        currentMonth: { month: today.slice(0, 7), cost: 999.0 }
+      }));
+
+      const result = await checkBudget(config);
+      expect(result.allowed).toBe(true);
+    });
+  });
 });
