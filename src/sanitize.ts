@@ -130,7 +130,17 @@ export function sanitize(
 
   // Apply extra patterns
   if (config.extraPatterns) {
-    const compiled = compileExtraPatterns(config.extraPatterns);
+    const rawExtra = config.extraPatterns;
+    const compiled =
+      Array.isArray(rawExtra) &&
+      rawExtra.length > 0 &&
+      rawExtra.every((p) => p instanceof RegExp)
+        ? (rawExtra as RegExp[]).filter((pattern) => {
+            if (isRegexPatternSafe(pattern.source)) return true;
+            warn(`[sanitize] Skipped potentially unsafe regex pattern: ${pattern.source}`);
+            return false;
+          })
+        : compileExtraPatterns(rawExtra);
     for (const pattern of compiled) {
       // Include both tokens to satisfy legacy expectations in tests
       applyPattern(pattern, "[REDACTED_CUSTOM][REDACTED]", pattern.toString());
