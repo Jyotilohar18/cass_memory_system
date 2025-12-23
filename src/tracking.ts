@@ -401,6 +401,12 @@ export function getProcessedLogPath(workspacePath?: string): string {
   return path.join(reflectionsDir, `ws-${hash}.processed.log`);
 }
 
+function normalizeSessionPathForLog(sessionPath: string): string {
+  const trimmed = (sessionPath || "").trim();
+  if (!trimmed) return "";
+  return path.resolve(expandPath(trimmed));
+}
+
 export class ProcessedLog {
   private entries: Map<string, ProcessedEntry> = new Map();
   private logPath: string;
@@ -422,8 +428,10 @@ export class ProcessedLog {
           try {
             const entry = JSON.parse(line);
             if (entry.sessionPath) {
-              this.entries.set(entry.sessionPath, {
-                sessionPath: entry.sessionPath,
+              const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
+              if (!normalizedSessionPath) continue;
+              this.entries.set(normalizedSessionPath, {
+                sessionPath: normalizedSessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
                 diaryId: entry.diaryId || entry.id, // Handle both keys for compatibility
                 deltasGenerated: typeof entry.deltasGenerated === 'number' ? entry.deltasGenerated : 0
@@ -442,8 +450,10 @@ export class ProcessedLog {
 
           const [id, sessionPath, processedAt, deltasProposed] = parts;
           if (sessionPath) {
-            this.entries.set(sessionPath, {
-              sessionPath,
+            const normalizedSessionPath = normalizeSessionPathForLog(sessionPath);
+            if (!normalizedSessionPath) continue;
+            this.entries.set(normalizedSessionPath, {
+              sessionPath: normalizedSessionPath,
               processedAt: processedAt || new Date().toISOString(),
               diaryId: id === "-" ? undefined : id,
               deltasGenerated: parseInt(deltasProposed || "0", 10)
@@ -471,9 +481,12 @@ export class ProcessedLog {
   }
 
   async append(entry: ProcessedEntry, options?: { skipLock?: boolean }): Promise<void> {
-    this.entries.set(entry.sessionPath, entry);
+    const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
+    if (!normalizedSessionPath) return;
+    const normalizedEntry: ProcessedEntry = { ...entry, sessionPath: normalizedSessionPath };
+    this.entries.set(normalizedSessionPath, normalizedEntry);
 
-    const line = JSON.stringify(entry);
+    const line = JSON.stringify(normalizedEntry);
     await ensureDir(path.dirname(this.logPath));
 
     const doAppend = async () => {
@@ -497,15 +510,21 @@ export class ProcessedLog {
   }
 
   has(sessionPath: string): boolean {
-    return this.entries.has(sessionPath);
+    const normalized = normalizeSessionPathForLog(sessionPath);
+    if (!normalized) return false;
+    return this.entries.has(normalized);
   }
 
   get(sessionPath: string): ProcessedEntry | undefined {
-    return this.entries.get(sessionPath);
+    const normalized = normalizeSessionPathForLog(sessionPath);
+    if (!normalized) return undefined;
+    return this.entries.get(normalized);
   }
 
   add(entry: ProcessedEntry): void {
-    this.entries.set(entry.sessionPath, entry);
+    const normalized = normalizeSessionPathForLog(entry.sessionPath);
+    if (!normalized) return;
+    this.entries.set(normalized, { ...entry, sessionPath: normalized });
   }
 
   getProcessedPaths(): Set<string> {

@@ -10,7 +10,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { resolveGlobalDir, atomicWrite, warn } from "./utils.js";
+import { resolveGlobalDir, atomicWrite, warn, expandPath } from "./utils.js";
 import { withLock } from "./lock.js";
 
 // Schema version for future migrations
@@ -43,6 +43,12 @@ const OnboardStateSchema = z.object({
 });
 
 export type OnboardState = z.infer<typeof OnboardStateSchema>;
+
+function normalizeSessionPath(sessionPath: string): string {
+  const trimmed = (sessionPath || "").trim();
+  if (!trimmed) return "";
+  return path.resolve(expandPath(trimmed));
+}
 
 /**
  * Create an empty onboarding state
@@ -130,10 +136,11 @@ export async function saveOnboardState(state: OnboardState): Promise<void> {
  * Check if a session has already been processed
  */
 export function isSessionProcessed(state: OnboardState, sessionPath: string): boolean {
-  // Normalize path for comparison
-  const normalizedPath = path.resolve(sessionPath);
+  // Normalize path for comparison (expand ~ + resolve to stable absolute)
+  const normalizedPath = normalizeSessionPath(sessionPath);
+  if (!normalizedPath) return false;
   return state.processedSessions.some(
-    (s) => path.resolve(s.path) === normalizedPath
+    (s) => normalizeSessionPath(s.path) === normalizedPath
   );
 }
 
@@ -148,15 +155,16 @@ export async function markSessionProcessed(
   const statePath = getStatePath();
   return await withLock(statePath, async () => {
     const state = await loadOnboardState();
-    const normalizedPath = path.resolve(sessionPath);
+    const normalizedPath = normalizeSessionPath(sessionPath);
+    if (!normalizedPath) return state;
 
     // Check if already processed (idempotent)
     const existingIndex = state.processedSessions.findIndex(
-      (s) => path.resolve(s.path) === normalizedPath
+      (s) => normalizeSessionPath(s.path) === normalizedPath
     );
 
     const entry: ProcessedSession = {
-      path: sessionPath,
+      path: normalizedPath,
       processedAt: new Date().toISOString(),
       rulesExtracted,
       skipped: options.skipped,
@@ -219,10 +227,14 @@ export function filterUnprocessedSessions<T extends { path: string }>(
   state: OnboardState
 ): T[] {
   const processedPaths = new Set(
-    state.processedSessions.map((s) => path.resolve(s.path))
+    state.processedSessions.map((s) => normalizeSessionPath(s.path)).filter(Boolean)
   );
 
   return sessions.filter(
-    (session) => !processedPaths.has(path.resolve(session.path))
+    (session) => {
+      const normalized = normalizeSessionPath(session.path);
+      if (!normalized) return true;
+      return !processedPaths.has(normalized);
+    }
   );
 }
