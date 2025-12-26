@@ -1065,8 +1065,9 @@ export async function cassTimeline(
                 path: s.path || s.source_path || "",
                 agent: s.agent || "unknown",
                 messageCount: s.messageCount || s.message_count || 0,
-                startTime: s.startTime || s.start_time || s.created_at || "",
-                endTime: s.endTime || s.end_time || "",
+                // Coerce to string in case created_at is a Unix timestamp number
+                startTime: String(s.startTime || s.start_time || s.created_at || ""),
+                endTime: String(s.endTime || s.end_time || ""),
               })),
             });
           }
