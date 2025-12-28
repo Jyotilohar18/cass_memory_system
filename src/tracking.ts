@@ -481,12 +481,25 @@ export class ProcessedLog {
   }
 
   async append(entry: ProcessedEntry, options?: { skipLock?: boolean }): Promise<void> {
-    const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
-    if (!normalizedSessionPath) return;
-    const normalizedEntry: ProcessedEntry = { ...entry, sessionPath: normalizedSessionPath };
-    this.entries.set(normalizedSessionPath, normalizedEntry);
+    await this.appendBatch([entry], options);
+  }
 
-    const line = JSON.stringify(normalizedEntry);
+  async appendBatch(entries: ProcessedEntry[], options?: { skipLock?: boolean }): Promise<void> {
+    if (entries.length === 0) return;
+
+    const lines: string[] = [];
+    
+    for (const entry of entries) {
+      const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
+      if (!normalizedSessionPath) continue;
+      
+      const normalizedEntry: ProcessedEntry = { ...entry, sessionPath: normalizedSessionPath };
+      this.entries.set(normalizedSessionPath, normalizedEntry);
+      lines.push(JSON.stringify(normalizedEntry));
+    }
+
+    if (lines.length === 0) return;
+
     await ensureDir(path.dirname(this.logPath));
 
     const doAppend = async () => {
@@ -494,9 +507,9 @@ export class ProcessedLog {
       const exists = await fileExists(this.logPath);
       if (!exists) {
         const header = "# JSONL format: {\"sessionPath\":..., \"processedAt\":...}\n";
-        await fs.writeFile(this.logPath, header + line + "\n", "utf-8");
+        await fs.writeFile(this.logPath, header + lines.join("\n") + "\n", "utf-8");
       } else {
-        await fs.appendFile(this.logPath, line + "\n", "utf-8");
+        await fs.appendFile(this.logPath, lines.join("\n") + "\n", "utf-8");
       }
     };
 
