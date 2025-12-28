@@ -943,7 +943,14 @@ export async function handleSessionExportFailure(
   log(`cass export failed for ${sessionPath}: ${exportError.message}. Attempting fallback parse...`, true);
 
   try {
-    const fileContent = await fs.readFile(expandPath(sessionPath), "utf-8");
+    const resolvedPath = expandPath(sessionPath);
+    const stats = await fs.stat(resolvedPath);
+    if (stats.size > 10 * 1024 * 1024) { // 10MB limit
+      warn(`[cass] Session file too large for fallback parse (${(stats.size / 1024 / 1024).toFixed(2)}MB). Skipping.`);
+      return null;
+    }
+
+    const fileContent = await fs.readFile(resolvedPath, "utf-8");
     const ext = path.extname(sessionPath).toLowerCase();
     const activeConfig = config || await loadConfig();
     const sanitizeConfig = getSanitizeConfig(activeConfig);
