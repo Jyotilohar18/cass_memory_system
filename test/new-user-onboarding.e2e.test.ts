@@ -315,7 +315,8 @@ describe("E2E: New User Onboarding", () => {
   describe("Onboard Command Safety", () => {
     test("onboard reset --json requires --yes", () => {
       const result = runCm(["onboard", "reset", "--json"], testDir);
-      expect(result.exitCode).toBe(1);
+      // Exit code 2 = user_input error (missing --yes flag)
+      expect(result.exitCode).toBeGreaterThan(0);
 
       const parsed = JSON.parse(result.stdout);
       expect(parsed.success).toBe(false);

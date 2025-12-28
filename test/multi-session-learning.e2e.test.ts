@@ -182,10 +182,10 @@ describe("E2E: Multi-Session Learning (Scenario 7)", () => {
       const resultC = await reflectOnSession(diaryC, curationB.playbook, config);
       const curationC = curatePlaybook(curationB.playbook, resultC.deltas, config);
 
-      // Duplicate should be skipped
-      expect(curationC.skipped).toBeGreaterThanOrEqual(1);
-      expect(curationC.playbook.bullets.length).toBe(2); // No new bullet added
-      logger.step("session-c", "info", "Session C complete (dedup verified)", {
+      // Duplicate is now applied as reinforcement (adds helpful feedback)
+      expect(curationC.applied).toBeGreaterThanOrEqual(1);
+      expect(curationC.playbook.bullets.length).toBe(2); // No new bullet added (reinforcement doesn't add bullets)
+      logger.step("session-c", "info", "Session C complete (dedup via reinforcement)", {
         deltas: resultC.deltas.length,
         applied: curationC.applied,
         skipped: curationC.skipped,
@@ -271,18 +271,19 @@ describe("E2E: Multi-Session Learning (Scenario 7)", () => {
       expect(growthStats[0].bulletCount).toBe(1);  // First rule
       expect(growthStats[1].bulletCount).toBe(2);  // Second unique rule
       expect(growthStats[2].bulletCount).toBe(3);  // Third unique rule
-      expect(growthStats[3].bulletCount).toBe(3);  // Duplicate skipped
-      expect(growthStats[4].bulletCount).toBe(3);  // Duplicate skipped
+      expect(growthStats[3].bulletCount).toBe(3);  // Duplicate reinforced (still 3 bullets)
+      expect(growthStats[4].bulletCount).toBe(3);  // Duplicate reinforced (still 3 bullets)
 
-      // Verify duplicates were skipped
-      expect(growthStats[3].skipped).toBe(1);
-      expect(growthStats[4].skipped).toBe(1);
+      // Duplicates are now applied as reinforcements (not skipped)
+      // They add helpful feedback to existing rules
+      expect(growthStats[3].applied).toBe(1);  // Duplicate reinforced
+      expect(growthStats[4].applied).toBe(1);  // Duplicate reinforced
 
       logger.step("growth-curve", "info", "Growth curve analysis", {
         finalBulletCount: playbook.bullets.length,
         totalSessions: 5,
         uniqueRules: 3,
-        duplicatesSkipped: 2
+        duplicatesReinforced: 2
       });
       logger.endStep("growth-curve");
     });
@@ -430,11 +431,12 @@ describe("E2E: Multi-Session Learning (Scenario 7)", () => {
         totalApplied,
         totalSkipped,
         finalBullets: playbook.bullets.length,
-        dedupRate: totalSkipped / totalDeltas
+        applicationRate: totalApplied / totalDeltas
       });
 
-      // Verify some dedup occurred
-      expect(totalSkipped).toBeGreaterThan(0);
+      // With the new reinforcement behavior, duplicates are applied (not skipped)
+      // Verify deduplication by checking final bullet count is less than total deltas
+      expect(totalApplied).toBeGreaterThan(0);
       expect(playbook.bullets.length).toBeLessThan(sessionCount);
 
       logger.endStep("delta-stats");
