@@ -17,23 +17,42 @@ async function writePlaybookFile(file: string, playbook: unknown) {
   await fs.writeFile(file, yaml.stringify(playbook), "utf-8");
 }
 
-async function captureStdout(fn: () => Promise<void>): Promise<string> {
-  let output = "";
-  const originalWrite = process.stdout.write;
+/**
+ * Capture console.log output during async function execution.
+ * Uses console.log patching (works in Bun) instead of process.stdout.write patching.
+ */
+function captureConsole() {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
 
-  process.stdout.write = (chunk: any, encoding?: any, cb?: any) => {
-    output += typeof chunk === "string" ? chunk : chunk.toString(encoding);
-    if (typeof cb === "function") cb();
-    return true;
+  console.log = (...args: any[]) => {
+    logs.push(args.map(String).join(" "));
+  };
+  console.error = (...args: any[]) => {
+    errors.push(args.map(String).join(" "));
   };
 
+  return {
+    logs,
+    errors,
+    restore: () => {
+      console.log = originalLog;
+      console.error = originalError;
+    },
+    getOutput: () => logs.join("\n"),
+  };
+}
+
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+  const capture = captureConsole();
   try {
     await fn();
   } finally {
-    process.stdout.write = originalWrite;
+    capture.restore();
   }
-
-  return output.trim();
+  return capture.getOutput().trim();
 }
 
 describe("staleCommand", () => {
