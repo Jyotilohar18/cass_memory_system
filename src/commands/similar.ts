@@ -100,8 +100,9 @@ export async function generateSimilarResults(
       });
       matches = semanticMatches.map((m) => ({ bullet: m.bullet, similarity: m.similarity }));
       mode = "semantic";
-    } catch {
+    } catch (err: any) {
       // Caller decides whether to display warnings; we fall back silently here.
+      warn(`[similar] Semantic search failed: ${err.message || String(err)}. Falling back to keyword search.`);
       matches = [];
       mode = "keyword";
     }
