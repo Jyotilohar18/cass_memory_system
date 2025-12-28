@@ -217,8 +217,6 @@ async function enrichWithRelatedSessions(
  * @public - Exported for testing
  */
 export function inferOutcome(content: string): "success" | "failure" | "mixed" {
-  const lowerContent = content.toLowerCase();
-
   const errorPatterns = [
     /\berror[s]?\b/i, /\bfailed\b/i, /\bexception\b/i, /\btraceback\b/i,
     /cannot\s+find/i, /not\s+found/i, /\bundefined\b/i, /null\s+reference/i,
@@ -465,14 +463,30 @@ export async function findDiaryBySession(
       ? path.resolve(expandPath(sessionPath))
       : path.resolve(base, sessionPath);
 
-    // Optimization: Check global processed log first to avoid scanning thousands of files
+    // Optimization: Check processed logs (global AND workspaces) to avoid scanning thousands of files
     try {
       const { getProcessedLogPath, ProcessedLog } = await import("./tracking.js");
       const globalLogPath = getProcessedLogPath(); 
-      const pLog = new ProcessedLog(globalLogPath);
-      await pLog.load();
+      const reflectionsDir = path.dirname(globalLogPath);
+
+      // 1. Check global log first
+      const globalLog = new ProcessedLog(globalLogPath);
+      await globalLog.load();
+      let entry = globalLog.get(target);
+
+      // 2. If not found, check workspace logs
+      if (!entry && await fs.access(reflectionsDir).then(() => true).catch(() => false)) {
+        const files = await fs.readdir(reflectionsDir);
+        const workspaceLogs = files.filter(f => f.endsWith(".processed.log") && f !== "global.processed.log");
+        
+        for (const logFile of workspaceLogs) {
+          const pLog = new ProcessedLog(path.join(reflectionsDir, logFile));
+          await pLog.load();
+          entry = pLog.get(target);
+          if (entry) break;
+        }
+      }
       
-      const entry = pLog.get(target);
       if (entry && entry.diaryId) {
         // Found indexed diary ID, load directly
         // We mock the config object since loadDiary only needs diaryDir
