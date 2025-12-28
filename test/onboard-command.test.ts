@@ -8,13 +8,12 @@
  */
 import { describe, test, expect } from "bun:test";
 import { writeFileSync } from "node:fs";
-import path from "node:path";
 import yaml from "yaml";
 import { onboardCommand } from "../src/commands/onboard.js";
 import { withTempCassHome } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestPlaybook, createTestBullet } from "./helpers/factories.js";
-import { markSessionProcessed, resetOnboardState, loadOnboardState } from "../src/onboard-state.js";
+import { markSessionProcessed, loadOnboardState } from "../src/onboard-state.js";
 
 /**
  * Capture console output during async function execution.
