@@ -1,13 +1,18 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { evidenceCountGate } from "../validate.js";
-import { safeCassSearch } from "../cass.js";
+import { safeCassSearch, type CassRunner } from "../cass.js";
 import { extractKeywords, printJsonResult } from "../utils.js";
-import { runValidator } from "../llm.js";
+import { runValidator, type LLMIO } from "../llm.js";
 
 type ValidateOptions = {
   json?: boolean;
   verbose?: boolean;
+};
+
+type ValidateDeps = {
+  io?: LLMIO;
+  cassRunner?: CassRunner;
 };
 
 interface ValidationOutput {
@@ -21,7 +26,8 @@ interface ValidationOutput {
 
 export async function validateCommand(
   proposedRule: string,
-  options: ValidateOptions = {}
+  options: ValidateOptions = {},
+  deps: ValidateDeps = {}
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = "validate";
@@ -32,7 +38,7 @@ export async function validateCommand(
   const config = await loadConfig();
 
   // Step 1: evidence-count gate (cheap heuristic)
-  const gate = await evidenceCountGate(proposedRule, config);
+  const gate = await evidenceCountGate(proposedRule, config, deps.cassRunner);
 
   // Helper to format evidence for output
   const evidenceFromHits = (hits: any[]) =>
@@ -70,7 +76,7 @@ export async function validateCommand(
   const hits = await safeCassSearch(extractKeywords(proposedRule).join(" "), {
     limit: 10,
     days: config.validationLookbackDays
-  }, config.cassPath, config);
+  }, config.cassPath, config, deps.cassRunner);
 
   const formattedEvidence = hits
     .map(
@@ -79,7 +85,7 @@ export async function validateCommand(
     )
     .join("\n---\n");
 
-  const llmResult = await runValidator(proposedRule, formattedEvidence, config);
+  const llmResult = await runValidator(proposedRule, formattedEvidence, config, deps.io);
 
   const verdict =
     llmResult.verdict === "REFINE"

@@ -13,6 +13,38 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import yaml from "yaml";
 import { Playbook, PlaybookBullet } from "../src/types.js";
+import { undoCommand } from "../src/commands/undo.js";
+import { withTempCassHome } from "./helpers/temp.js";
+import { withTempGitRepo } from "./helpers/git.js";
+import { createTestBullet as factoryCreateBullet, createTestPlaybook as factoryCreatePlaybook } from "./helpers/factories.js";
+
+/**
+ * Capture console output during async function execution.
+ */
+function captureConsole() {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  };
+
+  return {
+    logs,
+    errors,
+    restore: () => {
+      console.log = originalLog;
+      console.error = originalError;
+    },
+    getOutput: () => logs.join("\n"),
+    getErrors: () => errors.join("\n"),
+  };
+}
 
 // Test helper to create a bullet
 function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBullet {
@@ -405,6 +437,359 @@ describe("undo command - Unit Tests", () => {
       expect(plan.action).toBe("hard-delete");
       expect(plan.preview).toBe("Bullet to preview deletion");
       expect(plan.wouldChange).toContain("permanently removed");
+    });
+  });
+});
+
+describe("undoCommand integration", () => {
+  async function writePlaybook(path: string, playbook: Playbook) {
+    writeFileSync(path, yaml.stringify(playbook));
+  }
+
+  test("returns error when bullet not found (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          // Create empty playbook
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-nonexistent", { json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("error");
+            expect(output).toContain("not found");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("un-deprecates a deprecated bullet (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-deprecated-test",
+            content: "Test deprecated bullet",
+            deprecated: true,
+            deprecatedAt: "2025-01-01T00:00:00Z",
+            deprecationReason: "Test reason",
+            state: "retired",
+            maturity: "deprecated",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-deprecated-test", { json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("un-deprecate");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was updated
+          const updated = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(updated.bullets[0].deprecated).toBe(false);
+          expect(updated.bullets[0].state).toBe("active");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("returns error when trying to un-deprecate non-deprecated bullet", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-active-test",
+            content: "Active bullet",
+            deprecated: false,
+            state: "active",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-active-test", { json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("error");
+            expect(output).toContain("not deprecated");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("undoes last feedback event (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-feedback-test",
+            content: "Bullet with feedback",
+            helpfulCount: 3,
+            harmfulCount: 1,
+            feedbackEvents: [
+              { type: "helpful", timestamp: "2025-01-01T00:00:00Z", sessionPath: "/tmp/s1" },
+              { type: "harmful", timestamp: "2025-01-02T00:00:00Z", sessionPath: "/tmp/s2" },
+            ],
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-feedback-test", { feedback: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("undo-feedback");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was updated
+          const updated = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(updated.bullets[0].harmfulCount).toBe(0);
+          expect(updated.bullets[0].feedbackEvents).toHaveLength(1);
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("returns error when no feedback to undo", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-no-feedback",
+            content: "Bullet without feedback",
+            feedbackEvents: [],
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-no-feedback", { feedback: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("error");
+            expect(output).toContain("No feedback");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("hard deletes a bullet with --yes flag (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet1 = factoryCreateBullet({
+            id: "b-keep",
+            content: "Keep this bullet",
+          });
+          const bullet2 = factoryCreateBullet({
+            id: "b-delete",
+            content: "Delete this bullet",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet1, bullet2]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-delete", { hard: true, yes: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("hard-delete");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was updated
+          const updated = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(updated.bullets).toHaveLength(1);
+          expect(updated.bullets[0].id).toBe("b-keep");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("hard delete requires confirmation without --yes", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-confirm-delete",
+            content: "Bullet requiring confirmation",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-confirm-delete", { hard: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("error");
+            expect(output).toContain("Confirmation required");
+          } finally {
+            capture.restore();
+          }
+
+          // Bullet should still exist
+          const updated = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(updated.bullets).toHaveLength(1);
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("dry-run shows plan without making changes (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-dryrun-test",
+            content: "Bullet for dry run test",
+            deprecated: true,
+            state: "retired",
+            maturity: "deprecated",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-dryrun-test", { dryRun: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("dryRun");
+            expect(output).toContain("un-deprecate");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was NOT changed
+          const unchanged = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(unchanged.bullets[0].deprecated).toBe(true);
+          expect(unchanged.bullets[0].state).toBe("retired");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("dry-run for feedback undo shows last event", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-feedback-dryrun",
+            content: "Bullet for feedback dry run",
+            helpfulCount: 2,
+            feedbackEvents: [
+              { type: "helpful", timestamp: "2025-01-01T00:00:00Z", sessionPath: "/tmp/s1" },
+            ],
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-feedback-dryrun", { feedback: true, dryRun: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("undo-feedback");
+            expect(output).toContain("helpful");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was NOT changed
+          const unchanged = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(unchanged.bullets[0].feedbackEvents).toHaveLength(1);
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("dry-run for hard delete shows preview", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = factoryCreateBullet({
+            id: "b-hard-dryrun",
+            content: "Bullet for hard delete dry run",
+          });
+          await writePlaybook(env.playbookPath, factoryCreatePlaybook([bullet]));
+
+          const capture = captureConsole();
+          try {
+            await undoCommand("b-hard-dryrun", { hard: true, dryRun: true, json: true });
+            const output = capture.getOutput();
+            expect(output).toContain("success");
+            expect(output).toContain("hard-delete");
+            expect(output).toContain("permanently removed");
+          } finally {
+            capture.restore();
+          }
+
+          // Verify the playbook was NOT changed
+          const unchanged = yaml.parse(readFileSync(env.playbookPath, "utf-8"));
+          expect(unchanged.bullets).toHaveLength(1);
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
     });
   });
 });
