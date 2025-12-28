@@ -1,85 +1,92 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { reflectOnSession, deduplicateDeltas } from "../src/reflect.js"; // Internal export for testing
 import { __test as reflectCommandTest } from "../src/commands/reflect.js";
 import { createTestConfig, createTestDiary, createTestPlaybook, createTestBullet } from "./helpers/factories.js";
 import { PlaybookDelta } from "../src/types.js";
-import { __resetReflectorStubsForTest } from "../src/llm.js";
 import { formatBulletsForPrompt, hashDelta, shouldExitEarly } from "../src/reflect.js";
+import { withLlmShim } from "./helpers/llm-shim.js";
 
 describe("reflectOnSession", () => {
   const config = createTestConfig();
 
-  beforeEach(() => {
-    __resetReflectorStubsForTest();
-    delete process.env.CM_REFLECTOR_STUBS;
-  });
-
-  afterEach(() => {
-    __resetReflectorStubsForTest();
-    delete process.env.CM_REFLECTOR_STUBS;
-  });
-  
-  test.serial("should terminate when no new insights found", async () => {
+  test("should terminate when no new insights found", async () => {
     const diary = createTestDiary();
     const playbook = createTestPlaybook();
-    
-    // Stub reflector with empty list
-    process.env.CM_REFLECTOR_STUBS = JSON.stringify([{ deltas: [] }]);
 
-    const result = await reflectOnSession(diary, playbook, config);
-    const deltas = Array.isArray(result) ? result : result.deltas ?? [];
-    
-    expect(deltas).toEqual([]);
+    // Use LLMIO injection instead of env var
+    await withLlmShim({
+      reflector: { deltas: [] }
+    }, async (io) => {
+      const result = await reflectOnSession(diary, playbook, config, io);
+      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
+      expect(deltas).toEqual([]);
+    });
   });
 
-  test.serial("should aggregate unique deltas across iterations", async () => {
+  test("should aggregate unique deltas across iterations", async () => {
     const diary = createTestDiary();
     const playbook = createTestPlaybook();
-    
-    // Iteration 1 returns A
-    // Iteration 2 returns B
-    // Iteration 3 returns A (duplicate)
-    
-    const deltaA: PlaybookDelta = { 
-      type: "add", 
+
+    // Per-iteration responses: A, B, then A (duplicate)
+    const deltaA: PlaybookDelta = {
+      type: "add",
       bullet: { content: "Rule A", category: "test" },
       reason: "reason A",
       sourceSession: diary.sessionPath
     };
-    
-    const deltaB: PlaybookDelta = { 
-      type: "add", 
+
+    const deltaB: PlaybookDelta = {
+      type: "add",
       bullet: { content: "Rule B", category: "test" },
       reason: "reason B",
       sourceSession: diary.sessionPath
     };
 
-    process.env.CM_REFLECTOR_STUBS = JSON.stringify([
+    // Use a function to return different responses per iteration
+    let callCount = 0;
+    const iterationResponses = [
       { deltas: [deltaA] },
       { deltas: [deltaB] },
       { deltas: [deltaA] }
-    ]);
+    ];
 
-    const result = await reflectOnSession(diary, playbook, config);
-    const deltas = Array.isArray(result) ? result : result.deltas ?? [];
-    
-    expect(deltas).toHaveLength(2);
-    expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule A");
-    expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule B");
+    await withLlmShim({
+      reflector: () => {
+        const response = iterationResponses[callCount] || { deltas: [] };
+        callCount++;
+        return response;
+      }
+    }, async (io) => {
+      const result = await reflectOnSession(diary, playbook, config, io);
+      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
+
+      expect(deltas).toHaveLength(2);
+      expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule A");
+      expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule B");
+    });
   });
 
-  test.serial("should stop if max iterations reached", async () => {
+  test("should stop if max iterations reached", async () => {
     const diary = createTestDiary();
     const playbook = createTestPlaybook();
-    
-    process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-      { deltas: [{ type: "add", bullet: { content: "Unique", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
-      { deltas: [{ type: "add", bullet: { content: "Another", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
-    ]);
 
-    const result = await reflectOnSession(diary, playbook, { ...config, maxReflectorIterations: 2 });
-    const deltas = Array.isArray(result) ? result : result.deltas ?? [];
-    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    let callCount = 0;
+    const iterationResponses = [
+      { deltas: [{ type: "add" as const, bullet: { content: "Unique", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
+      { deltas: [{ type: "add" as const, bullet: { content: "Another", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
+    ];
+
+    await withLlmShim({
+      reflector: () => {
+        const response = iterationResponses[callCount] || { deltas: [] };
+        callCount++;
+        return response;
+      }
+    }, async (io) => {
+      const result = await reflectOnSession(diary, playbook, { ...config, maxReflectorIterations: 2 }, io);
+      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
+      expect(deltas.length).toBeGreaterThanOrEqual(2);
+    });
   });
 });
 

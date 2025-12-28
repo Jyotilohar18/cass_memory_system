@@ -15,7 +15,7 @@ import {
   CassHit,
   DecisionLogEntry
 } from "./types.js";
-import { runReflector } from "./llm.js";
+import { runReflector, type LLMIO } from "./llm.js";
 import { log, now, hashContent } from "./utils.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
@@ -200,36 +200,40 @@ export interface ReflectionResult {
 export async function reflectOnSession(
   diary: DiaryEntry,
   playbook: Playbook,
-  config: Config
+  config: Config,
+  io?: LLMIO
 ): Promise<ReflectionResult> {
   log(`Reflecting on diary ${diary.id}...`);
 
-  // Stubbed flow for tests: CM_REFLECTOR_STUBS contains an array of { deltas }
-  // objects representing each iteration's output. This bypasses LLM calls.
-  const stubEnv = process.env.CM_REFLECTOR_STUBS;
-  if (stubEnv) {
-    try {
-      const stubIterations: { deltas: PlaybookDelta[] }[] = JSON.parse(stubEnv);
-      const collected: PlaybookDelta[] = [];
+  // Stubbed flow for subprocess E2E tests: CM_REFLECTOR_STUBS contains an array
+  // of { deltas } objects. This is only checked when `io` is NOT provided,
+  // since unit/integration tests should pass a mock LLMIO directly.
+  if (!io) {
+    const stubEnv = process.env.CM_REFLECTOR_STUBS;
+    if (stubEnv) {
+      try {
+        const stubIterations: { deltas: PlaybookDelta[] }[] = JSON.parse(stubEnv);
+        const collected: PlaybookDelta[] = [];
 
-      for (const iteration of stubIterations) {
-        const injected = iteration.deltas.map((d) => {
-          if (d.type === "add") return { ...d, sourceSession: diary.sessionPath };
-          if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
-            return { ...d, sourceSession: diary.sessionPath };
-          }
-          return d;
-        });
-        collected.push(...injected);
+        for (const iteration of stubIterations) {
+          const injected = iteration.deltas.map((d) => {
+            if (d.type === "add") return { ...d, sourceSession: diary.sessionPath };
+            if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
+              return { ...d, sourceSession: diary.sessionPath };
+            }
+            return d;
+          });
+          collected.push(...injected);
+        }
+
+        return {
+          deltas: deduplicateDeltas(collected, []),
+          decisionLog: []
+        };
+      } catch (err) {
+        log(`Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`);
+        // fall through to real flow
       }
-
-      return {
-        deltas: deduplicateDeltas(collected, []),
-        decisionLog: []
-      };
-    } catch (err) {
-      log(`Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`);
-      // fall through to real flow
     }
   }
 
@@ -250,7 +254,8 @@ export async function reflectOnSession(
         existingBullets,
         cassHistory,
         i,
-        config
+        config,
+        io
       );
 
       const validDeltas: PlaybookDelta[] = output.deltas.map(d => {

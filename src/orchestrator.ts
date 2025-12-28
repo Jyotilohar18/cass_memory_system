@@ -5,6 +5,7 @@ import { findUnprocessedSessions, cassExport } from "./cass.js";
 import { generateDiary } from "./diary.js";
 import { reflectOnSession } from "./reflect.js";
 import { validateDelta } from "./validate.js";
+import type { LLMIO } from "./llm.js";
 import { curatePlaybook } from "./curate.js";
 import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId, hashContent, jaccardSimilarity } from "./utils.js";
 import { withLock } from "./lock.js";
@@ -18,6 +19,8 @@ export interface ReflectionOptions {
   session?: string; // Specific session path
   dryRun?: boolean;
   onProgress?: (event: ReflectionProgressEvent) => void;
+  /** Optional LLMIO for testing - bypasses env-based stubs when provided */
+  io?: LLMIO;
 }
 
 export interface ReflectionOutcome {
@@ -156,7 +159,7 @@ export async function orchestrateReflection(
           continue; 
         }
 
-        const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config);
+        const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config, options.io);
 
         // Validation
         const validatedDeltas: PlaybookDelta[] = [];

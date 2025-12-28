@@ -554,9 +554,13 @@ export async function runReflector<T>(
   config: Config,
   io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
-  const stub = nextReflectorStub<T>();
-  if (stub) {
-    return stub;
+  // Only check env-based stubs when using default IO (backward compat for subprocess E2E tests).
+  // When explicit LLMIO is injected, tests control responses directly via the io object.
+  if (io === DEFAULT_LLM_IO) {
+    const stub = nextReflectorStub<T>();
+    if (stub) {
+      return stub;
+    }
   }
 
   const diaryText = `
