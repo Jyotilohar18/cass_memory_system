@@ -201,7 +201,8 @@ describe("audit command - Unit Tests", () => {
 
             const promptJoined = prompts.join("\n");
             expect(promptJoined).not.toContain("SUPER_SECRET");
-            expect(promptJoined).toContain("[REDACTED_CUSTOM][REDACTED]");
+            // Extra patterns use the generic [REDACTED] placeholder
+            expect(promptJoined).toContain("[REDACTED]");
 
             expect(JSON.stringify(payload.data)).not.toContain("SUPER_SECRET");
           });

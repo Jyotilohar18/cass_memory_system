@@ -55,8 +55,9 @@ describe("ProcessedLog", () => {
     const log = new ProcessedLog(logPath);
     await log.load();
 
-    expect(log.getProcessedPaths().has("s1")).toBeTrue();
-    expect(log.getProcessedPaths().has("s2")).toBeTrue();
+    // Use has() which normalizes paths internally
+    expect(log.has("s1")).toBeTrue();
+    expect(log.has("s2")).toBeTrue();
     expect(log.getProcessedPaths().size).toBe(2);
   });
 
@@ -68,8 +69,13 @@ describe("ProcessedLog", () => {
     log.add({ sessionPath: "a", processedAt: "t1", deltasGenerated: 1 });
     log.add({ sessionPath: "b", processedAt: "t2", deltasGenerated: 0 });
 
+    // has() normalizes paths internally, so relative paths work
     expect(log.has("a")).toBeTrue();
     expect(log.has("c")).toBeFalse();
-    expect(log.getProcessedPaths()).toEqual(new Set(["a", "b"]));
+    // getProcessedPaths() returns normalized (absolute) paths
+    expect(log.getProcessedPaths().size).toBe(2);
+    // The paths should be normalized versions of "a" and "b"
+    expect(log.getProcessedPaths().has(path.resolve("a"))).toBeTrue();
+    expect(log.getProcessedPaths().has(path.resolve("b"))).toBeTrue();
   });
 });

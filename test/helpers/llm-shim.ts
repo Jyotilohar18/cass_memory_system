@@ -178,6 +178,8 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
               tags: (d as any).bullet?.tags || []
             } : undefined,
             bulletId: (d as any).bulletId,
+            bulletIds: (d as any).bulletIds,
+            mergedContent: (d as any).mergedContent,
             reason: (d as any).reason || "Generated from reflection",
             sourceSession: (d as any).sourceSession || "/test/session.jsonl"
           }))

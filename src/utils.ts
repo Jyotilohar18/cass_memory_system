@@ -1409,9 +1409,16 @@ export function formatRelativeTime(isoDate: string): string {
   if (days === 0) return "today";
   if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
-  if (days < 30) return `${Math.round(days / 7)} weeks ago`;
-  if (days < 365) return `${Math.round(days / 30)} months ago`;
-  return `${Math.round(days / 365)} years ago`;
+  if (days < 30) {
+    const weeks = Math.round(days / 7);
+    return weeks === 1 ? "1 week ago" : `${weeks} weeks ago`;
+  }
+  if (days < 365) {
+    const months = Math.round(days / 30);
+    return months === 1 ? "1 month ago" : `${months} months ago`;
+  }
+  const years = Math.round(days / 365);
+  return years === 1 ? "1 year ago" : `${years} years ago`;
 }
 
 // --- Text & NLP ---

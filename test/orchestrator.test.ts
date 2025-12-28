@@ -3,7 +3,7 @@
  *
  * These tests run in-process (for Bun coverage) and avoid network/LLM calls by:
  * - Setting `CASS_MEMORY_LLM=none` (fast diary generation, no LLM)
- * - Using `CM_REFLECTOR_STUBS` to inject deterministic deltas (no LLM)
+ * - Using LLMIO injection to inject deterministic deltas (no env vars needed)
  * - Setting `config.validationEnabled=false` to bypass validator/evidence calls
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
@@ -17,6 +17,7 @@ import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import { expandPath, now } from "../src/utils.js";
 import { cleanupEnvironment, createIsolatedEnvironment, TestEnv } from "./helpers/temp.js";
 import { createTestConfig, createTestPlaybook, createBullet } from "./helpers/factories.js";
+import { withLlmShim, type LlmShimConfig } from "./helpers/llm-shim.js";
 
 async function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -68,10 +69,6 @@ function readPlaybook(playbookPath: string): any {
   return yaml.parse(readFileSync(playbookPath, "utf-8"));
 }
 
-function setReflectorStubs(deltas: any[]): void {
-  process.env.CM_REFLECTOR_STUBS = JSON.stringify([{ deltas }]);
-}
-
 describe("orchestrateReflection (unit)", () => {
   test("processes a single session and persists add delta to global playbook", async () => {
     await withIsolatedHome(async (env) => {
@@ -90,22 +87,18 @@ describe("orchestrateReflection (unit)", () => {
         validationEnabled: false,
       });
 
-      await withEnv(
-        {
-          CASS_MEMORY_LLM: "none",
-          CM_REFLECTOR_STUBS: undefined,
-        },
-        async () => {
-          setReflectorStubs([
-            {
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({
+          reflector: {
+            deltas: [{
               type: "add",
               bullet: { content: "Always add an in-process unit test before refactors.", category: "testing", tags: [] },
               reason: "Ensures coverage and prevents regressions",
               sourceSession: "stub",
-            },
-          ]);
-
-          const outcome = await orchestrateReflection(config, { session: sessionPath });
+            }]
+          }
+        }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
 
           expect(outcome.errors).toEqual([]);
           expect(outcome.sessionsProcessed).toBe(1);
@@ -114,8 +107,8 @@ describe("orchestrateReflection (unit)", () => {
           const saved = readPlaybook(env.playbookPath);
           const contents = (saved?.bullets || []).map((b: any) => b.content);
           expect(contents).toContain("Always add an in-process unit test before refactors.");
-        }
-      );
+        });
+      });
     });
   });
 
@@ -136,24 +129,26 @@ describe("orchestrateReflection (unit)", () => {
         validationEnabled: false,
       });
 
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_REFLECTOR_STUBS: undefined }, async () => {
-        setReflectorStubs([
-          {
-            type: "add",
-            bullet: { content: "Dry-run delta should be returned, not persisted.", category: "testing", tags: [] },
-            reason: "Dry-run behavior",
-            sourceSession: "stub",
-          },
-        ]);
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({
+          reflector: {
+            deltas: [{
+              type: "add",
+              bullet: { content: "Dry-run delta should be returned, not persisted.", category: "testing", tags: [] },
+              reason: "Dry-run behavior",
+              sourceSession: "stub",
+            }]
+          }
+        }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, dryRun: true, io });
 
-        const outcome = await orchestrateReflection(config, { session: sessionPath, dryRun: true });
+          expect(outcome.sessionsProcessed).toBe(1);
+          expect(outcome.deltasGenerated).toBe(1);
+          expect(outcome.dryRunDeltas?.length).toBe(1);
 
-        expect(outcome.sessionsProcessed).toBe(1);
-        expect(outcome.deltasGenerated).toBe(1);
-        expect(outcome.dryRunDeltas?.length).toBe(1);
-
-        const saved = readPlaybook(env.playbookPath);
-        expect((saved?.bullets || []).length).toBe(0);
+          const saved = readPlaybook(env.playbookPath);
+          expect((saved?.bullets || []).length).toBe(0);
+        });
       });
     });
   });
@@ -172,7 +167,7 @@ describe("orchestrateReflection (unit)", () => {
         validationEnabled: false,
       });
 
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_REFLECTOR_STUBS: undefined }, async () => {
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
         const outcome = await orchestrateReflection(config, { session: sessionPath });
 
         expect(outcome.errors).toEqual([]);
@@ -211,7 +206,7 @@ describe("orchestrateReflection (unit)", () => {
         validationEnabled: false,
       });
 
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_REFLECTOR_STUBS: undefined }, async () => {
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
         const outcome = await orchestrateReflection(config, { session: sessionPath });
         expect(outcome.sessionsProcessed).toBe(0);
         expect(outcome.deltasGenerated).toBe(0);
@@ -240,31 +235,33 @@ describe("orchestrateReflection (unit)", () => {
         dedupSimilarityThreshold: 0.85,
       });
 
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_REFLECTOR_STUBS: undefined }, async () => {
-        setReflectorStubs([
-          {
-            type: "merge",
-            bulletIds: [replacement.id, other.id],
-            mergedContent: replacement.content,
-            reason: "Duplicates",
-          },
-        ]);
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({
+          reflector: {
+            deltas: [{
+              type: "merge",
+              bulletIds: [replacement.id, other.id],
+              mergedContent: replacement.content,
+              reason: "Duplicates",
+            }]
+          }
+        }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(outcome.errors).toEqual([]);
 
-        const outcome = await orchestrateReflection(config, { session: sessionPath });
-        expect(outcome.errors).toEqual([]);
+          const saved = readPlaybook(env.playbookPath);
+          const bullets = saved?.bullets || [];
+          expect(bullets.length).toBe(2);
 
-        const saved = readPlaybook(env.playbookPath);
-        const bullets = saved?.bullets || [];
-        expect(bullets.length).toBe(2);
+          const savedOther = bullets.find((b: any) => b.id === other.id);
+          expect(savedOther).toBeTruthy();
+          expect(savedOther.deprecated).toBe(true);
+          expect(savedOther.replacedBy).toBe(replacement.id);
 
-        const savedOther = bullets.find((b: any) => b.id === other.id);
-        expect(savedOther).toBeTruthy();
-        expect(savedOther.deprecated).toBe(true);
-        expect(savedOther.replacedBy).toBe(replacement.id);
-
-        const savedReplacement = bullets.find((b: any) => b.id === replacement.id);
-        expect(savedReplacement).toBeTruthy();
-        expect(savedReplacement.deprecated).toBe(false);
+          const savedReplacement = bullets.find((b: any) => b.id === replacement.id);
+          expect(savedReplacement).toBeTruthy();
+          expect(savedReplacement.deprecated).toBe(false);
+        });
       });
     });
   });
@@ -286,26 +283,28 @@ describe("orchestrateReflection (unit)", () => {
         validationEnabled: false,
       });
 
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_REFLECTOR_STUBS: undefined }, async () => {
-        setReflectorStubs([
-          {
-            type: "add",
-            bullet: { content: "Only one concurrent run should apply this rule.", category: "testing", tags: [] },
-            reason: "Concurrency",
-            sourceSession: "stub",
-          },
-        ]);
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({
+          reflector: {
+            deltas: [{
+              type: "add",
+              bullet: { content: "Only one concurrent run should apply this rule.", category: "testing", tags: [] },
+              reason: "Concurrency",
+              sourceSession: "stub",
+            }]
+          }
+        }, async (io) => {
+          const [a, b] = await Promise.all([
+            orchestrateReflection(config, { session: sessionPath, io }),
+            orchestrateReflection(config, { session: sessionPath, io }),
+          ]);
 
-        const [a, b] = await Promise.all([
-          orchestrateReflection(config, { session: sessionPath }),
-          orchestrateReflection(config, { session: sessionPath }),
-        ]);
+          expect(a.sessionsProcessed + b.sessionsProcessed).toBe(1);
 
-        expect(a.sessionsProcessed + b.sessionsProcessed).toBe(1);
-
-        const saved = readPlaybook(env.playbookPath);
-        const contents = (saved?.bullets || []).map((bullet: any) => bullet.content);
-        expect(contents.filter((c: string) => c === "Only one concurrent run should apply this rule.").length).toBe(1);
+          const saved = readPlaybook(env.playbookPath);
+          const contents = (saved?.bullets || []).map((bullet: any) => bullet.content);
+          expect(contents.filter((c: string) => c === "Only one concurrent run should apply this rule.").length).toBe(1);
+        });
       });
     });
   });

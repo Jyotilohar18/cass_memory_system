@@ -330,27 +330,14 @@ describe("E2E: CLI mark command", () => {
     it("requires either helpful or harmful flag", async () => {
       await expect(
         recordFeedback("any-bullet", {})
-      ).rejects.toThrow("Must specify --helpful or --harmful");
+      ).rejects.toThrow("Must specify exactly one of --helpful or --harmful");
     });
 
-    it("accepts only one of helpful or harmful", async () => {
-      const { home, cassMemoryDir } = await setupTestEnvironment();
-      const originalHome = process.env.HOME;
-
-      try {
-        process.env.HOME = home;
-
-        const playbook = createEmptyPlaybook("test");
-        const bullet = createTestBullet({ id: "dual-flag" });
-        playbook.bullets = [bullet];
-        await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
-
-        // When both flags are set, helpful takes precedence (first check)
-        const result = await recordFeedback("dual-flag", { helpful: true, harmful: true });
-        expect(result.type).toBe("helpful");
-      } finally {
-        process.env.HOME = originalHome;
-      }
+    it("rejects when both helpful and harmful are set", async () => {
+      // When both flags are set, the command throws an error
+      await expect(
+        recordFeedback("any-bullet", { helpful: true, harmful: true })
+      ).rejects.toThrow("Must specify exactly one of --helpful or --harmful");
     });
   });
 

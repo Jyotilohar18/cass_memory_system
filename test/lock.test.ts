@@ -286,9 +286,10 @@ describe("withLock - Stale Lock Detection", () => {
       await writeFile(targetPath, "content");
       const lockPath = `${targetPath}.lock.d`;
 
-      // Create a lock dir with old mtime
+      // Create a lock dir with old mtime and a non-existent PID
+      // (must use non-existent PID since stale check skips if PID is still running)
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), process.pid.toString());
+      await writeFile(join(lockPath, "pid"), "999998");
       
       const oldTime = Date.now() - 35_000; // 35 seconds ago
       const { utimes } = await import("node:fs/promises");
@@ -306,9 +307,10 @@ describe("withLock - Stale Lock Detection", () => {
       await writeFile(targetPath, "content");
       const lockPath = `${targetPath}.lock.d`;
 
-      // Create a lock dir with mtime 2s ago
+      // Create a lock dir with mtime 2s ago and a non-existent PID
+      // (must use non-existent PID since stale check skips if PID is still running)
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "pid"), process.pid.toString());
+      await writeFile(join(lockPath, "pid"), "999997");
       const twoSecondsAgo = Date.now() - 2_000;
       const { utimes } = await import("node:fs/promises");
       await utimes(lockPath, twoSecondsAgo / 1000, twoSecondsAgo / 1000);

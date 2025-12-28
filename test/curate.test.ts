@@ -44,10 +44,12 @@ describe("curatePlaybook", () => {
       expect(result.playbook.bullets[0].category).toBe("typescript");
     });
 
-    it("skips exact duplicate content", () => {
+    it("reinforces exact duplicate content with helpful feedback", () => {
+      const initialHelpfulCount = 0;
       const existingBullet = createTestBullet({
         content: "Use const instead of let",
-        category: "style"
+        category: "style",
+        helpfulCount: initialHelpfulCount
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -65,9 +67,12 @@ describe("curatePlaybook", () => {
 
       const result = curatePlaybook(playbook, [delta], config);
 
-      expect(result.applied).toBe(0);
-      expect(result.skipped).toBe(1);
+      // Exact duplicates are reinforced (not skipped) - they add helpful feedback
+      expect(result.applied).toBe(1);
+      expect(result.skipped).toBe(0);
       expect(result.playbook.bullets).toHaveLength(1);
+      // The existing bullet should have an additional helpful feedback event
+      expect(result.playbook.bullets[0].helpfulCount).toBe(initialHelpfulCount + 1);
     });
 
     it("records conflicts when new rule contradicts existing guidance", () => {
@@ -1027,15 +1032,16 @@ describe("curatePlaybook", () => {
       const deltas: PlaybookDelta[] = [
         { type: "add", bullet: { content: "New 1", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/1.jsonl", reason: "r" },
         { type: "add", bullet: { content: "New 2", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/2.jsonl", reason: "r" },
-        { type: "add", bullet: { content: "Existing", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/3.jsonl", reason: "dup" }, // Duplicate
+        { type: "add", bullet: { content: "Existing", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/3.jsonl", reason: "dup" }, // Duplicate (reinforces)
         { type: "helpful", bulletId: "bullet-1", sourceSession: "/s/4.jsonl" },
-        { type: "helpful", bulletId: "non-existent", sourceSession: "/s/5.jsonl" } // Skip
+        { type: "helpful", bulletId: "non-existent", sourceSession: "/s/5.jsonl" } // Skip (not found)
       ];
 
       const result = curatePlaybook(playbook, deltas, config);
 
-      expect(result.applied).toBe(3); // 2 adds + 1 helpful
-      expect(result.skipped).toBe(2); // 1 duplicate + 1 non-existent
+      // Duplicates now reinforce existing bullets (count as applied, not skipped)
+      expect(result.applied).toBe(4); // 2 adds + 1 duplicate reinforcement + 1 helpful
+      expect(result.skipped).toBe(1); // 1 non-existent
     });
   });
 
@@ -1073,7 +1079,7 @@ describe("curatePlaybook", () => {
       expect(addDecision?.content).toContain("Test rule");
     });
 
-    it("logs rejected duplicate decisions", () => {
+    it("logs duplicate reinforcement decisions", () => {
       const existingBullet = createTestBullet({
         content: "Existing rule",
         category: "test"
@@ -1095,8 +1101,9 @@ describe("curatePlaybook", () => {
       const result = curatePlaybook(playbook, [delta], config);
 
       expect(result.decisionLog).toBeDefined();
+      // Duplicates are now reinforced (not skipped) - they add helpful feedback
       const dupDecision = result.decisionLog?.find(d =>
-        d.phase === "dedup" && d.action === "skipped"
+        d.phase === "dedup" && d.action === "modified"
       );
       expect(dupDecision).toBeDefined();
       expect(dupDecision?.reason).toContain("duplicate");

@@ -246,7 +246,8 @@ b3BlbnNzaC1rZXktdjEAAAAA
       extraPatterns: [/ABC-\d+-XYZ/g],
     };
     const result = sanitize(text, config);
-    expect(result).toContain("[REDACTED_CUSTOM]");
+    // Extra patterns use the generic [REDACTED] placeholder
+    expect(result).toContain("[REDACTED]");
     expect(result).not.toContain("ABC-123-XYZ");
   });
 

@@ -313,3 +313,191 @@ describe("reflect module helpers (unit)", () => {
     expect(shouldExitEarly(0, 1, 50, config)).toBe(true);
   });
 });
+
+describe("reflectCommand input validation", () => {
+  test("rejects invalid days (negative)", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ days: -5, json: true });
+          const output = capture.getOutput();
+          // Should have error output, not throw
+          expect(output).toContain("error");
+          expect(output).toContain("days");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects invalid days (zero)", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ days: 0, json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects invalid maxSessions (negative)", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ maxSessions: -10, json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects empty agent string", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ agent: "", json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("agent");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects whitespace-only agent string", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ agent: "   ", json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects empty workspace string", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ workspace: "", json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("workspace");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects empty session string", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ session: "", json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("session");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("accepts valid positive days", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+        // Disable LLM to avoid API calls
+        const originalLLM = process.env.CASS_MEMORY_LLM;
+        process.env.CASS_MEMORY_LLM = "none";
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ days: 7, json: true });
+          const output = capture.getOutput();
+          // Should not contain input validation error
+          expect(output).not.toContain("must be a positive integer");
+        } finally {
+          capture.restore();
+          process.env.CASS_MEMORY_LLM = originalLLM;
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("accepts undefined options (uses defaults)", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+        const originalLLM = process.env.CASS_MEMORY_LLM;
+        process.env.CASS_MEMORY_LLM = "none";
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ json: true });
+          const output = capture.getOutput();
+          // Should process without input validation errors
+          expect(output).not.toContain("must be a positive integer");
+          expect(output).not.toContain("must be a non-empty string");
+        } finally {
+          capture.restore();
+          process.env.CASS_MEMORY_LLM = originalLLM;
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});

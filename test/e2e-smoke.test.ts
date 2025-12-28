@@ -189,7 +189,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(existsSync(outPath)).toBe(true);
 
     const second = runCm(["project", "--output", outPath], testDir);
-    expect(second.exitCode).toBe(1);
+    // Exit code 2 = user_input error category (file already exists)
+    expect(second.exitCode).toBe(2);
     expect(second.stderr).toContain("--force");
 
     const third = runCm(["project", "--output", outPath, "--force"], testDir);
@@ -202,7 +203,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(() => JSON.parse(ok.stdout)).not.toThrow();
 
     const bad = runCm(["similar", "smoke test query", "--threshold", "2", "--json"], testDir);
-    expect(bad.exitCode).toBe(1);
+    // Exit code 2 = user_input error category (invalid threshold)
+    expect(bad.exitCode).toBe(2);
     const err = JSON.parse(bad.stdout);
     expect(typeof err.error?.message).toBe("string");
   });
@@ -210,8 +212,8 @@ describe("E2E CLI Smoke Test", () => {
   test("cm undo handles non-existent bullet gracefully", () => {
     const result = runCm(["undo", "b-nonexistent", "--json"], testDir);
 
-    // Should fail with exit code 1
-    expect(result.exitCode).toBe(1);
+    // Exit code 2 = user_input error category (bullet not found)
+    expect(result.exitCode).toBe(2);
 
     const response = JSON.parse(result.stdout);
     expect(response.error?.message).toContain("not found");
@@ -231,8 +233,8 @@ describe("E2E CLI Smoke Test", () => {
     // Try to undo feedback when there's none
     const result = runCm(["undo", bullet.id, "--feedback", "--json"], testDir);
 
-    // Should fail with exit code 1
-    expect(result.exitCode).toBe(1);
+    // Exit code 2 = user_input error category (no feedback to undo)
+    expect(result.exitCode).toBe(2);
 
     const response = JSON.parse(result.stdout);
     // Updated to match structured error format from CLI handler
