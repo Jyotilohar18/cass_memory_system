@@ -164,7 +164,8 @@ describe("E2E: ACE Learning Loop", () => {
 
       // Step 4: context surfaces learned bullet
       logger.startStep("context-a");
-      const contextA = runCm(["context", "Promise error handling", "--json"], testDir);
+      // Use terms that match the bullet content about handling rejections
+      const contextA = runCm(["context", "handle rejections", "--json"], testDir);
       logger.step("context-a", "info", "cm context (A) completed", {
         exitCode: contextA.exitCode,
         stdout: contextA.stdout,
@@ -259,7 +260,8 @@ describe("E2E: ACE Learning Loop", () => {
       });
 
       // Step 7: context no longer shows the deprecated rule
-      const contextAfter = runCm(["context", "Promise error handling", "--json"], testDir);
+      // Use terms that match the bullet content about handling rejections
+      const contextAfter = runCm(["context", "handle rejections", "--json"], testDir);
       logger.step("verify-prune", "info", "cm context (after) completed", {
         exitCode: contextAfter.exitCode,
         stdout: contextAfter.stdout,
