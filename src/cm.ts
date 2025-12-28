@@ -27,6 +27,7 @@ import { similarCommand } from "./commands/similar.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { guardCommand } from "./commands/guard.js";
 import { traumaCommand } from "./commands/trauma.js";
+import { infoCommand } from "./info.js";
 
 export function createProgram(argv: string[] = process.argv): Command {
   applyGlobalEnvFromArgv(argv);
@@ -52,7 +53,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--no-color", "Disable ANSI colors (also respects NO_COLOR)")
     .option("--no-emoji", "Disable emoji/icons (also respects CASS_MEMORY_NO_EMOJI)")
     .option("--width <n>", "Override output width (default: terminal columns)", toInt)
-    .option("--verbose", "Enable verbose diagnostics (sets CASS_MEMORY_VERBOSE=1)");
+    .option("--verbose", "Enable verbose diagnostics (sets CASS_MEMORY_VERBOSE=1)")
+    .option("--info", "Show version, config paths, environment, and dependencies");
 
 // --- Init ---
 program.command("init")
@@ -1076,10 +1078,24 @@ export function handleCliError(error: unknown, argv: string[] = process.argv, pr
 }
 
 if (import.meta.main) {
-  const program = createProgram(process.argv);
-  // Use parseAsync for proper async error handling
-  program.parseAsync().catch((err) => {
-    const code = handleCliError(err, process.argv, program);
-    process.exit(code);
-  });
+  // Handle --info before commander parses (similar to --version)
+  const args = process.argv.slice(2);
+  const hasInfoFlag = args.includes("--info");
+  const hasJsonFlag = args.includes("--json") || args.includes("-j");
+
+  if (hasInfoFlag) {
+    infoCommand({ json: hasJsonFlag })
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error(err);
+        process.exit(1);
+      });
+  } else {
+    const program = createProgram(process.argv);
+    // Use parseAsync for proper async error handling
+    program.parseAsync().catch((err) => {
+      const code = handleCliError(err, process.argv, program);
+      process.exit(code);
+    });
+  }
 }
