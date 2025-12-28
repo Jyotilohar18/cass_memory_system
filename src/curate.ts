@@ -64,7 +64,6 @@ function findSimilarBullet(
 const NEGATIVE_MARKERS = ["never", "dont", "don't", "avoid", "forbid", "forbidden", "disable", "prevent", "stop", "skip"];
 const POSITIVE_MARKERS = ["always", "must", "required", "ensure", "use", "enable"];
 const EXCEPTION_MARKERS = ["unless", "except", "only if", "only when", "except when"];
-const ALL_MARKERS = [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS];
 
 function hasMarker(text: string, markers: string[]): boolean {
   // Use word boundaries to avoid substring matches (e.g., "use" matching "user")
@@ -223,7 +222,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     // Copy provenance arrays to avoid aliasing mutations between bullets.
     sourceSessions: [...(bullet.sourceSessions || [])],
     sourceAgents: [...(bullet.sourceAgents || [])],
-    tags: [...bullet.tags, "inverted", "anti-pattern"],
+    tags: [...(bullet.tags || []), "inverted", "anti-pattern"],
     feedbackEvents: [],
     helpfulCount: 0,
     harmfulCount: 0,

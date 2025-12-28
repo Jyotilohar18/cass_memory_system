@@ -3,8 +3,7 @@
  * Shows common workflows that users can copy-paste.
  */
 import chalk from "chalk";
-import { getCliName } from "./utils.js";
-import { printJsonResult } from "./utils.js";
+import { getCliName, printJsonResult } from "./utils.js";
 
 export interface ExamplesOptions {
   json?: boolean;
