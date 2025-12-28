@@ -273,8 +273,9 @@ describe("CLI Command Chains E2E", () => {
       const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Without --yes this should refuse to delete (no TTY in tests)
+      // Exit code 2 = user_input error (missing --yes confirmation)
       const hardNoConfirm = runCm(["undo", bulletId, "--hard", "--json"], testDir);
-      expect(hardNoConfirm.exitCode).toBe(1);
+      expect(hardNoConfirm.exitCode).toBe(2);
 
       // Bullet should still exist
       const getAfterRefusal = runCm(["playbook", "get", bulletId, "--json"], testDir);
